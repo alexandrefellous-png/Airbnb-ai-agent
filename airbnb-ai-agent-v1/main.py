@@ -1028,6 +1028,7 @@ async def guesty_webhook(
 ):
 
     payload = await request.json()
+    log.warning("WEBHOOK PAYLOAD: %s", payload)
 
     log.info(
         "Guesty webhook received"
