@@ -24,7 +24,7 @@ _token = {"value": None, "expires_at": 0}
 # Add each Guesty listing ID here. Unknown listings are NEVER auto-answered.
 PROPERTIES = {
     # Replace this placeholder after we identify the real Guesty listing ID.
-    "PUT_GUESTY_LISTING_ID_HERE": {
+    "6a908557b01e820012493069": {
         "name": "31 rue du Caire",
         "address": "31 rue du Caire, 75002 Paris",
         "check_in": "16:00",
