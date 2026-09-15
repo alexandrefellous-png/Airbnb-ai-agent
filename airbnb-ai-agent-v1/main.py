@@ -17,15 +17,16 @@ from openai import OpenAI
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("airbnb-agent")
 
-app = FastAPI(title="Airbnb AI Agent")
+app = FastAPI()
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 GUESTY_CLIENT_ID = os.environ.get("GUESTY_CLIENT_ID", "")
 GUESTY_CLIENT_SECRET = os.environ.get("GUESTY_CLIENT_SECRET", "")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6")
-TEST_MODE = os.environ.get("TEST_MODE", "true").lower() == "true"
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
+# gpt-5.6 est actuellement un alias API valide.
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6")
+
+TEST_MODE = os.environ.get("TEST_MODE", "true").lower() == "true"
 
 GUESTY_BASE = "https://open-api.guesty.com/v1"
 TOKEN_URL = "https://open-api.guesty.com/oauth2/token"
@@ -34,10 +35,7 @@ RENDER_WEBHOOK_URL = (
     "https://airbnb-ai-agent-7neg.onrender.com/guesty/webhook"
 )
 
-_token = {
-    "value": None,
-    "expires_at": 0,
-}
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 
 # ============================================================
@@ -45,199 +43,167 @@ _token = {
 # ============================================================
 
 PROPERTIES = {
-
     "6a908557b01e820012493069": {
-
         "name": "31 rue du Caire",
-
         "address": "31 rue du Caire, 75002 Paris",
 
         "check_in": "16:00",
-
         "check_out": "10:00",
 
-        "facts": [
+        "floor": "1er étage",
+        "elevator": False,
 
-            "Appartement au 1er étage.",
+        "access": (
+            "Après être entré dans l'immeuble, traversez la cour. "
+            "Prenez le deuxième escalier. "
+            "L'appartement se trouve au 1er étage."
+        ),
 
-            "Prendre le deuxième escalier après la cour.",
+        "luggage": (
+            "Nous pouvons aider les voyageurs avec leurs bagages "
+            "au moment du check-in."
+        ),
 
-            "Immeuble sans ascenseur.",
+        "bedrooms": 2,
+        "bathrooms": 2,
+        "toilets": 1,
 
-            "Nous pouvons aider les voyageurs avec leurs bagages lors du check-in.",
+        "kitchen": "Cuisine entièrement équipée.",
 
-            "2 chambres.",
+        "air_conditioning": (
+            "L'appartement est climatisé."
+        ),
 
-            "2 salles de bains.",
+        "keybox": (
+            "Une boîte à clés sécurisée se trouve à l'entrée "
+            "de l'immeuble, au niveau des boîtes aux lettres."
+        ),
 
-            "1 toilette (WC) au total.",
+        "keybox_code": "C2613",
 
-            "Cuisine entièrement équipée.",
-
-            "Climatisation dans tout l'appartement.",
-
-            "Boîte à clés sécurisée à l'entrée de l'immeuble, dans la boîte aux lettres.",
-
-            "Code de la boîte à clés : C2613.",
-
-            "Le Wi-Fi est communiqué automatiquement via la messagerie Airbnb.",
-
-            "Une vidéo montrant l'accès à l'appartement existe dans les ressources internes.",
-        ],
-
-        "arrival_instructions": (
-            "Adresse : 31 rue du Caire, 75002 Paris. "
-            "À l'entrée de l'immeuble, la boîte à clés sécurisée "
-            "se trouve dans la boîte aux lettres (code C2613). "
-            "Après être entré, traverser la cour puis emprunter "
-            "le deuxième escalier. "
-            "L'appartement est au 1er étage."
+        "wifi": (
+            "Les informations Wi-Fi sont automatiquement "
+            "communiquées au voyageur via Airbnb."
         ),
     }
 }
 
 
 # ============================================================
-# INSTRUCTIONS DE L'AGENT IA
+# REGLES DE L'AGENT
 # ============================================================
 
 SYSTEM_RULES = """
 Tu es l'assistant de messagerie d'un hôte Airbnb à Paris.
 
-RÈGLES ABSOLUES
+Tu réponds UNIQUEMENT aux messages entrants des voyageurs.
 
-- Tu réponds UNIQUEMENT après un message entrant d'un voyageur.
+STYLE :
+- chaleureux
+- naturel
+- humain
+- poli
+- concis
+- pas de langage robotique
+- tu peux utiliser un smiley simple comme :)
+- réponds dans la langue du voyageur
+- évite les réponses inutilement longues
 
-- Réponds uniquement à partir des informations du logement
-  fournies dans le contexte.
+Exemple de ton :
+"Bonjour Paul, merci pour votre message :) Le check-in est
+possible à partir de 16h. Au plaisir de vous recevoir !"
 
-- N'invente JAMAIS une information.
+IMPORTANT :
+Tu dois utiliser uniquement les informations fournies dans
+PROPERTY INFORMATION.
 
-- Si l'information manque ou si tu as un doute,
-  retourne exactement :
+N'invente JAMAIS une information.
 
+Si tu ne connais pas une réponse, réponds exactement :
 ESCALATE
 
-- Pour remboursement, annulation, réduction, compensation,
-  litige, paiement, modification de réservation,
-  urgence médicale ou de sécurité, menace, plainte sérieuse
-  ou demande inhabituelle :
+Tu peux répondre automatiquement aux questions simples comme :
+- heure du check-in
+- heure du check-out
+- adresse
+- accès à l'appartement
+- étage
+- ascenseur
+- nombre de chambres
+- nombre de salles de bain
+- nombre de WC
+- climatisation
+- cuisine
+- Wi-Fi
+- bagages
+- difficulté à trouver l'appartement
 
-ESCALATE
+CAS SENSIBLES :
+Réponds exactement ESCALATE si le voyageur parle de :
+- remboursement
+- annulation
+- réduction
+- remise
+- compensation
+- dédommagement
+- litige
+- paiement
+- argent
+- plainte sérieuse
+- problème grave
+- accident
+- danger
+- urgence médicale
+- sécurité
+- demande inhabituelle nécessitant une décision de l'hôte
 
-- Ne promets jamais un early check-in ou un late check-out
-  si le contexte ne l'autorise pas explicitement.
+Ne propose jamais spontanément un remboursement,
+une réduction ou une compensation.
 
-- Ne révèle jamais les informations d'un autre logement.
+Ne répète pas automatiquement les informations Wi-Fi,
+check-out ou autres messages automatiques sauf si le voyageur
+pose explicitement la question.
 
-- Réponds seulement à la question posée.
-
-- Les messages automatiques Airbnb existent déjà.
-  Ne les répète pas inutilement.
-
-STYLE
-
-- Chaleureux.
-- Naturel.
-- Sympathique.
-- Concis.
-- Utilise des smileys comme :)
-- Pas de ton robotique.
-
-Commence normalement par :
-
-Bonjour [Prénom], merci pour votre message :)
-
-Utilise le prénom si disponible.
-
-Termine naturellement, par exemple :
-
-Au plaisir de vous recevoir !
-
-ou
-
-N'hésitez pas si vous avez besoin de quoi que ce soit :)
-
-Réponds dans la langue utilisée par le voyageur.
+Pour le code de boîte à clés :
+ne le communique que si le contexte fourni indique
+explicitement que le voyageur est autorisé à le recevoir.
+Sinon réponds ESCALATE.
 """
 
 
 # ============================================================
-# OUTILS
+# TOKEN GUESTY
 # ============================================================
 
-def clean_message(body: str) -> str:
+_token_cache = {
+    "token": None,
+    "expires_at": 0,
+}
 
-    if not body:
-        return ""
-
-    body = html.unescape(body)
-
-    body = re.sub(
-        r"<[^>]+>",
-        " ",
-        body,
-    )
-
-    body = re.sub(
-        r"\s+",
-        " ",
-        body,
-    ).strip()
-
-    return body
-
-
-# ============================================================
-# AUTHENTIFICATION GUESTY
-# ============================================================
 
 async def guesty_token() -> str:
 
     now = time.time()
 
     if (
-        _token["value"]
-        and now < _token["expires_at"] - 3600
+        _token_cache["token"]
+        and now < _token_cache["expires_at"] - 60
     ):
-        return _token["value"]
+        return _token_cache["token"]
 
-    if not GUESTY_CLIENT_ID:
-        raise RuntimeError(
-            "GUESTY_CLIENT_ID missing"
-        )
-
-    if not GUESTY_CLIENT_SECRET:
-        raise RuntimeError(
-            "GUESTY_CLIENT_SECRET missing"
-        )
-
-    async with httpx.AsyncClient(
-        timeout=20
-    ) as client:
+    async with httpx.AsyncClient(timeout=30) as client:
 
         response = await client.post(
-
             TOKEN_URL,
-
-            headers={
-                "Accept": "application/json",
-                "Content-Type":
-                    "application/x-www-form-urlencoded",
-            },
-
             data={
-                "grant_type":
-                    "client_credentials",
-
-                "scope":
-                    "open-api",
-
-                "client_id":
-                    GUESTY_CLIENT_ID,
-
-                "client_secret":
-                    GUESTY_CLIENT_SECRET,
+                "grant_type": "client_credentials",
+                "scope": "open-api",
+                "client_id": GUESTY_CLIENT_ID,
+                "client_secret": GUESTY_CLIENT_SECRET,
+            },
+            headers={
+                "Content-Type":
+                "application/x-www-form-urlencoded"
             },
         )
 
@@ -245,50 +211,44 @@ async def guesty_token() -> str:
 
         data = response.json()
 
-    _token["value"] = data["access_token"]
+    token = data["access_token"]
 
-    _token["expires_at"] = (
-        now
-        + int(
-            data.get(
-                "expires_in",
-                86400,
-            )
-        )
-    )
+    expires_in = data.get("expires_in", 86400)
 
-    return _token["value"]
+    _token_cache["token"] = token
+    _token_cache["expires_at"] = now + expires_in
+
+    return token
 
 
 # ============================================================
-# REQUÊTES GUESTY
+# APPELS GUESTY
 # ============================================================
 
 async def guesty_get(
     path: str,
-    params=None,
-) -> Any:
+    params: Any = None,
+):
 
     token = await guesty_token()
 
-    async with httpx.AsyncClient(
-        timeout=25
-    ) as client:
+    async with httpx.AsyncClient(timeout=30) as client:
 
         response = await client.get(
-
             f"{GUESTY_BASE}{path}",
-
-            headers={
-                "Authorization":
-                    f"Bearer {token}",
-
-                "Accept":
-                    "application/json",
-            },
-
             params=params,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+            },
         )
+
+        if response.status_code >= 400:
+            log.error(
+                "Guesty GET error %s - %s",
+                response.status_code,
+                response.text[:1000],
+            )
 
         response.raise_for_status()
 
@@ -297,112 +257,137 @@ async def guesty_get(
 
 async def guesty_post(
     path: str,
-    payload: dict,
-) -> Any:
+    body: dict,
+):
 
     token = await guesty_token()
 
-    async with httpx.AsyncClient(
-        timeout=25
-    ) as client:
+    async with httpx.AsyncClient(timeout=30) as client:
 
         response = await client.post(
-
             f"{GUESTY_BASE}{path}",
-
+            json=body,
             headers={
-                "Authorization":
-                    f"Bearer {token}",
-
-                "Accept":
-                    "application/json",
-
-                "Content-Type":
-                    "application/json",
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
             },
-
-            json=payload,
         )
+
+        if response.status_code >= 400:
+            log.error(
+                "Guesty POST error %s - %s",
+                response.status_code,
+                response.text[:1000],
+            )
 
         response.raise_for_status()
 
-        if response.content:
+        try:
             return response.json()
-
-        return {}
+        except Exception:
+            return {"status_code": response.status_code}
 
 
 # ============================================================
-# RECHERCHE D'INFORMATIONS
+# OUTILS
 # ============================================================
 
-def deep_find(
-    obj: Any,
-    keys: set[str],
-):
+def deep_find(obj: Any, keys: set[str]):
 
     if isinstance(obj, dict):
 
         for key, value in obj.items():
 
-            if key in keys and value:
+            if key in keys:
+
+                if isinstance(value, str):
+                    return value
 
                 if isinstance(value, dict):
 
-                    for subkey in (
+                    for id_key in (
                         "_id",
                         "id",
+                        "listingId",
+                        "reservationId",
                     ):
+                        if value.get(id_key):
+                            return value[id_key]
 
-                        if value.get(subkey):
-                            return value[subkey]
+            result = deep_find(value, keys)
 
-                else:
-                    return value
-
-        for value in obj.values():
-
-            found = deep_find(
-                value,
-                keys,
-            )
-
-            if found:
-                return found
+            if result:
+                return result
 
     elif isinstance(obj, list):
 
-        for value in obj:
+        for item in obj:
 
-            found = deep_find(
-                value,
-                keys,
-            )
+            result = deep_find(item, keys)
 
-            if found:
-                return found
+            if result:
+                return result
 
     return None
 
 
+def clean_message(text: str) -> str:
+
+    if not text:
+        return ""
+
+    text = html.unescape(text)
+
+    text = re.sub(
+        r"<br\s*/?>",
+        "\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r"<[^>]+>",
+        " ",
+        text,
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
+
+    return text.strip()
+
+
 # ============================================================
-# RÉSERVATION
+# RESERVATION
 # ============================================================
 
 async def get_reservation(
     reservation_id: str,
 ) -> dict:
 
+    log.info(
+        "Retrieving reservation %s",
+        reservation_id,
+    )
+
+    # IMPORTANT :
+    # Guesty attend reservationIds[].
     data = await guesty_get(
-
         "/reservations-v3",
-
         params=[
             (
-                "reservationIds",
+                "reservationIds[]",
                 reservation_id,
             )
         ],
+    )
+
+    log.info(
+        "Reservation retrieved successfully"
     )
 
     if isinstance(data, list):
@@ -412,34 +397,60 @@ async def get_reservation(
 
         return {}
 
-    for key in (
-        "data",
-        "results",
-        "reservations",
-    ):
+    if isinstance(data, dict):
 
-        if (
-            isinstance(data, dict)
-            and isinstance(
-                data.get(key),
-                list,
-            )
-            and data[key]
+        for key in (
+            "data",
+            "results",
+            "reservations",
+            "items",
         ):
 
-            return data[key][0]
+            value = data.get(key)
 
-    if isinstance(data, dict):
+            if isinstance(value, list) and value:
+                return value[0]
+
         return data
 
     return {}
 
 
+# ============================================================
+# IDENTIFICATION DU LOGEMENT
+# ============================================================
+
 def extract_listing_id(
     reservation: dict,
 ):
 
-    return deep_find(
+    # Formats Guesty possibles
+    candidates = [
+        reservation.get("listingId"),
+        reservation.get("unitId"),
+        reservation.get("unitTypeId"),
+    ]
+
+    listing = reservation.get("listing")
+
+    if isinstance(listing, dict):
+
+        candidates.extend([
+            listing.get("_id"),
+            listing.get("id"),
+        ])
+
+    elif isinstance(listing, str):
+
+        candidates.append(listing)
+
+    for candidate in candidates:
+
+        if candidate in PROPERTIES:
+            return candidate
+
+    # Recherche récursive en secours
+    found = deep_find(
         reservation,
         {
             "listingId",
@@ -447,179 +458,170 @@ def extract_listing_id(
         },
     )
 
+    if found in PROPERTIES:
+        return found
+
+    return None
+
+
+# ============================================================
+# CONVERSATION
+# ============================================================
 
 def extract_conversation_id(
     reservation: dict,
     payload: dict,
 ):
 
-    conversation_id = deep_find(
+    conversation = payload.get("conversation")
 
+    if isinstance(conversation, dict):
+
+        for key in ("_id", "id"):
+
+            if conversation.get(key):
+                return conversation[key]
+
+    found = deep_find(
         reservation,
-
         {
             "conversationId",
             "conversation",
         },
     )
 
-    if conversation_id:
-        return conversation_id
+    if found:
+        return found
 
-    conversation = (
-        payload.get("conversation")
-        or {}
-    )
+    return None
 
-    return (
-        conversation.get("_id")
-        or conversation.get("id")
-    )
 
+# ============================================================
+# NOM DU VOYAGEUR
+# ============================================================
 
 def extract_guest_name(
     reservation: dict,
     payload: dict,
-) -> str:
+):
 
-    conversation = (
-        payload.get("conversation")
-        or {}
-    )
+    conversation = payload.get("conversation", {})
 
-    meta = (
-        conversation.get("meta")
-        or {}
-    )
+    if isinstance(conversation, dict):
 
-    name = meta.get("guestName")
+        meta = conversation.get("meta", {})
 
-    if name:
-        return str(name).split()[0]
+        if isinstance(meta, dict):
 
-    guest = (
-        reservation.get("guest")
-        if isinstance(
-            reservation,
-            dict,
-        )
-        else None
-    )
+            name = meta.get("guestName")
+
+            if name:
+                return name.split()[0]
+
+    guest = reservation.get("guest")
 
     if isinstance(guest, dict):
 
-        for key in (
-            "firstName",
-            "fullname",
-            "fullName",
-        ):
+        first_name = (
+            guest.get("firstName")
+            or guest.get("first_name")
+        )
 
-            if guest.get(key):
+        if first_name:
+            return first_name
 
-                return (
-                    str(
-                        guest[key]
-                    )
-                    .split()[0]
-                )
-
-    # Important :
-    # vide plutôt que "Bonjour"
-    # pour éviter "Bonjour Bonjour"
     return ""
 
 
 # ============================================================
-# RÉCUPÉRER LE DERNIER MESSAGE DU VOYAGEUR
+# MESSAGE DU VOYAGEUR
 # ============================================================
 
-async def latest_guest_message(
-    conversation_id: str,
+def extract_webhook_message(
     payload: dict,
 ) -> str:
 
-    try:
+    message = payload.get("message")
 
-        posts = await guesty_get(
+    if not isinstance(message, dict):
+        return ""
 
-            f"/communication/conversations/"
-            f"{conversation_id}/posts",
+    message_type = message.get("type", "")
 
-            params={
-                "sort":
-                    "-createdAt",
+    # On veut uniquement les messages reçus
+    if message_type in (
+        "fromHost",
+        "fromGuesty",
+    ):
+        return ""
 
-                "limit":
-                    20,
-            },
-        )
-
-        if isinstance(posts, list):
-
-            candidates = posts
-
-        else:
-
-            candidates = (
-                posts.get("data")
-                or posts.get("results")
-                or posts.get("posts")
-                or []
-            )
-
-        for post in candidates:
-
-            if not isinstance(
-                post,
-                dict,
-            ):
-                continue
-
-            message_type = str(
-                post.get(
-                    "type",
-                    "",
-                )
-            ).lower()
-
-            sent_by = str(
-                post.get(
-                    "sentBy",
-                    "",
-                )
-            ).lower()
-
-            if (
-                "guest" in message_type
-                or sent_by == "guest"
-                or message_type
-                    == "fromthirdparty"
-            ):
-
-                return clean_message(
-                    post.get(
-                        "body",
-                        "",
-                    )
-                )
-
-    except Exception:
-
-        log.exception(
-            "Could not fetch conversation posts"
-        )
-
-    message = (
-        payload.get("message")
-        or {}
+    body = (
+        message.get("body")
+        or message.get("text")
+        or message.get("message")
+        or ""
     )
 
-    return clean_message(
-        message.get(
-            "body",
-            "",
-        )
+    return clean_message(body)
+
+
+async def latest_guest_message(
+    conversation_id: str,
+) -> str:
+
+    data = await guesty_get(
+        f"/communication/conversations/"
+        f"{conversation_id}/posts"
     )
+
+    posts = []
+
+    if isinstance(data, list):
+
+        posts = data
+
+    elif isinstance(data, dict):
+
+        for key in (
+            "posts",
+            "results",
+            "items",
+            "data",
+        ):
+
+            value = data.get(key)
+
+            if isinstance(value, list):
+
+                posts = value
+                break
+
+    # Du plus récent au plus ancien
+    for post in reversed(posts):
+
+        if not isinstance(post, dict):
+            continue
+
+        message_type = post.get("type", "")
+
+        if message_type in (
+            "fromHost",
+            "fromGuesty",
+        ):
+            continue
+
+        body = (
+            post.get("body")
+            or post.get("text")
+            or post.get("message")
+        )
+
+        body = clean_message(body or "")
+
+        if body:
+            return body
+
+    return ""
 
 
 # ============================================================
@@ -627,127 +629,133 @@ async def latest_guest_message(
 # ============================================================
 
 def generate_reply(
-    first_name: str,
-    property_data: dict,
+    guest_name: str,
     guest_message: str,
+    property_info: dict,
+    keybox_authorized: bool = False,
 ) -> str:
 
-    guest_name_text = (
-        first_name
-        if first_name
-        else "non disponible"
-    )
-
     context = f"""
-VOYAGEUR
+PROPERTY INFORMATION:
 
-Prénom :
-{guest_name_text}
+Property name:
+{property_info["name"]}
 
+Address:
+{property_info["address"]}
 
-LOGEMENT
+Check-in:
+{property_info["check_in"]}
 
-Nom :
-{property_data["name"]}
+Check-out:
+{property_info["check_out"]}
 
-Adresse :
-{property_data["address"]}
+Floor:
+{property_info["floor"]}
 
-Check-in :
-à partir de {property_data["check_in"]}
+Elevator:
+{"Yes" if property_info["elevator"] else "No"}
 
-Check-out :
-avant {property_data["check_out"]}
+Access:
+{property_info["access"]}
 
+Luggage:
+{property_info["luggage"]}
 
-INFORMATIONS FIABLES
+Bedrooms:
+{property_info["bedrooms"]}
 
-- """ + "\n- ".join(
-        property_data["facts"]
-    ) + f"""
+Bathrooms:
+{property_info["bathrooms"]}
 
+Toilets:
+{property_info["toilets"]}
 
-INSTRUCTIONS D'ACCÈS FIABLES
+Kitchen:
+{property_info["kitchen"]}
 
-{property_data["arrival_instructions"]}
+Air conditioning:
+{property_info["air_conditioning"]}
 
+Key box:
+{property_info["keybox"]}
 
-MESSAGE DU VOYAGEUR
+Key box code:
+{property_info["keybox_code"] if keybox_authorized else "DO NOT DISCLOSE"}
+
+Wi-Fi:
+{property_info["wifi"]}
+
+Guest first name:
+{guest_name if guest_name else "Unknown"}
+
+TRAVELER MESSAGE:
 
 {guest_message}
+
+Write ONLY the message that should be sent to the traveler.
+
+If human intervention is required, write exactly:
+ESCALATE
 """
 
-    response = (
-        openai_client.responses.create(
-
-            model=OPENAI_MODEL,
-
-            instructions=SYSTEM_RULES,
-
-            input=context,
-        )
+    response = openai_client.responses.create(
+        model=OPENAI_MODEL,
+        instructions=SYSTEM_RULES,
+        input=context,
     )
 
-    return (
-        response.output_text
-        .strip()
-    )
+    return response.output_text.strip()
 
 
 # ============================================================
-# ENVOYER UNE RÉPONSE
+# ENVOI
 # ============================================================
 
 async def send_reply(
     conversation_id: str,
     reply: str,
-    incoming_module: Any,
+    module_type: str = "airbnb2",
 ):
-
-    # TEST MODE :
-    # aucune réponse réelle n'est envoyée.
 
     if TEST_MODE:
 
         log.warning(
-            "TEST_MODE reply for %s: %s",
-            conversation_id,
+            "======================================"
+        )
+
+        log.warning(
+            "TEST MODE - MESSAGE NOT SENT"
+        )
+
+        log.warning(
+            "AI WOULD REPLY: %s",
             reply,
+        )
+
+        log.warning(
+            "======================================"
         )
 
         return
 
-    if isinstance(
-        incoming_module,
-        dict,
-    ):
-
-        module = incoming_module
-
-    else:
-
-        module = {
-            "type":
-                "platform"
-        }
+    # TEST_MODE doit être désactivé explicitement
+    # avant qu'un message puisse partir.
 
     await guesty_post(
-
         f"/communication/conversations/"
         f"{conversation_id}/send-message",
-
         {
-            "module":
-                module,
-
-            "body":
-                reply,
+            "module": {
+                "type": module_type
+            },
+            "body": reply,
         },
     )
 
 
 # ============================================================
-# TRAITEMENT D'UN MESSAGE ENTRANT
+# TRAITEMENT DU WEBHOOK
 # ============================================================
 
 async def process_message(
@@ -756,82 +764,111 @@ async def process_message(
 
     try:
 
-        if (
-            payload.get("event")
-            !=
-            "reservation.messageReceived"
-        ):
-            return
+        event = payload.get("event")
 
-        message = (
-            payload.get("message")
-            or {}
-        )
-
-        message_type = str(
-            message.get(
-                "type",
-                "",
-            )
-        ).lower()
-
-        # On ignore les messages
-        # qui ne viennent pas du voyageur.
-
-        if (
-            message_type
-            and message_type
-            not in {
-                "fromguest",
-                "fromthirdparty",
-            }
-        ):
+        if event != "reservation.messageReceived":
 
             log.info(
-                "Ignored message type: %s",
-                message_type,
+                "Ignored event: %s",
+                event,
             )
 
             return
 
-        reservation_id = (
-            payload.get(
-                "reservationId"
-            )
+        log.info(
+            "Incoming Guesty message received"
+        )
+
+        # ----------------------------------------
+        # RESERVATION ID
+        # ----------------------------------------
+
+        reservation_id = payload.get(
+            "reservationId"
         )
 
         if not reservation_id:
 
+            reservation_id = deep_find(
+                payload,
+                {
+                    "reservationId",
+                },
+            )
+
+        if not reservation_id:
+
             log.warning(
-                "No reservationId - ignored"
+                "No reservation ID - ignored"
             )
 
             return
 
-        reservation = (
-            await get_reservation(
-                reservation_id
-            )
+        log.info(
+            "Reservation ID: %s",
+            reservation_id,
         )
 
-        listing_id = (
-            extract_listing_id(
-                reservation
-            )
+        # ----------------------------------------
+        # MESSAGE
+        # ----------------------------------------
+
+        guest_message = extract_webhook_message(
+            payload
         )
 
-        # Sécurité :
-        # aucun autre logement
-        # n'est autorisé.
+        # ----------------------------------------
+        # RESERVATION
+        # ----------------------------------------
 
-        if listing_id not in PROPERTIES:
+        reservation = await get_reservation(
+            reservation_id
+        )
+
+        if not reservation:
 
             log.warning(
-                "Unknown listing %s - NO AUTO REPLY",
-                listing_id,
+                "Reservation not found"
             )
 
             return
+
+        # ----------------------------------------
+        # LOGEMENT
+        # ----------------------------------------
+
+        listing_id = extract_listing_id(
+            reservation
+        )
+
+        if not listing_id:
+
+            log.warning(
+                "Unknown listing - ignored"
+            )
+
+            return
+
+        property_info = PROPERTIES.get(
+            listing_id
+        )
+
+        if not property_info:
+
+            log.warning(
+                "Property not configured - ignored"
+            )
+
+            return
+
+        log.info(
+            "Property identified: %s",
+            property_info["name"],
+        )
+
+        # ----------------------------------------
+        # CONVERSATION
+        # ----------------------------------------
 
         conversation_id = (
             extract_conversation_id(
@@ -843,182 +880,186 @@ async def process_message(
         if not conversation_id:
 
             log.warning(
-                "No conversation ID - NO AUTO REPLY"
+                "No conversation ID - ignored"
             )
 
             return
 
-        guest_message = (
-            await latest_guest_message(
-                conversation_id,
-                payload,
-            )
+        log.info(
+            "Conversation ID found"
         )
+
+        # ----------------------------------------
+        # MESSAGE FALLBACK
+        # ----------------------------------------
+
+        if not guest_message:
+
+            guest_message = (
+                await latest_guest_message(
+                    conversation_id
+                )
+            )
 
         if not guest_message:
 
             log.warning(
-                "Empty guest message - ignored"
+                "No guest message found"
             )
 
             return
 
-        first_name = (
-            extract_guest_name(
-                reservation,
-                payload,
-            )
+        log.info(
+            "Guest message: %s",
+            guest_message[:500],
         )
+
+        # ----------------------------------------
+        # NOM
+        # ----------------------------------------
+
+        guest_name = extract_guest_name(
+            reservation,
+            payload,
+        )
+
+        # ----------------------------------------
+        # SECURITE CODE BOITE A CLES
+        # ----------------------------------------
+
+        # Pour le moment on NE donne jamais automatiquement
+        # le code de la boîte à clés.
+        # On ajoutera ensuite la vérification des dates/statut.
+        keybox_authorized = False
+
+        # ----------------------------------------
+        # GENERATION IA
+        # ----------------------------------------
 
         reply = generate_reply(
-
-            first_name,
-
-            PROPERTIES[
-                listing_id
-            ],
-
-            guest_message,
+            guest_name=guest_name,
+            guest_message=guest_message,
+            property_info=property_info,
+            keybox_authorized=keybox_authorized,
         )
 
-        if (
-            reply.strip()
-            == "ESCALATE"
-        ):
+        if not reply:
 
             log.warning(
-                "ESCALATE reservation=%s message=%s",
-                reservation_id,
-                guest_message,
+                "OpenAI returned empty reply"
             )
 
             return
 
+        # ----------------------------------------
+        # ESCALADE
+        # ----------------------------------------
+
+        if reply.strip().upper() == "ESCALATE":
+
+            log.warning(
+                "HUMAN ESCALATION REQUIRED"
+            )
+
+            return
+
+        # ----------------------------------------
+        # MODULE
+        # ----------------------------------------
+
+        module_type = "airbnb2"
+
+        conversation = payload.get(
+            "conversation",
+            {},
+        )
+
+        if isinstance(conversation, dict):
+
+            integration = conversation.get(
+                "integration",
+                {},
+            )
+
+            if isinstance(integration, dict):
+
+                platform = integration.get(
+                    "platform",
+                    "",
+                )
+
+                if platform:
+                    log.info(
+                        "Conversation platform: %s",
+                        platform,
+                    )
+
+        # ----------------------------------------
+        # ENVOI / TEST
+        # ----------------------------------------
+
         await send_reply(
-
             conversation_id,
-
             reply,
-
-            message.get(
-                "module"
-            ),
+            module_type,
         )
 
     except Exception:
 
         log.exception(
-            "Message processing failed"
+            "ERROR WHILE PROCESSING MESSAGE"
         )
 
 
 # ============================================================
-# PAGE D'ACCUEIL
+# ROUTES
 # ============================================================
 
 @app.get("/")
 async def root():
 
     return {
-
-        "status":
-            "ok",
-
-        "service":
-            "airbnb-ai-agent",
-
-        "test_mode":
-            TEST_MODE,
-
-        "known_properties":
-            len(PROPERTIES),
+        "status": "Airbnb AI Agent running",
+        "test_mode": TEST_MODE,
     }
 
-
-# ============================================================
-# HEALTH CHECK
-# ============================================================
 
 @app.get("/health")
 async def health():
 
     return {
-
-        "ok":
-            True,
-
-        "test_mode":
-            TEST_MODE,
+        "ok": True,
+        "test_mode": TEST_MODE,
     }
 
 
 # ============================================================
-# CRÉER LE WEBHOOK GUESTY
+# CREATION WEBHOOK
+# NE PAS RELANCER SI LE WEBHOOK EXISTE DEJA
 # ============================================================
 
 @app.get("/setup-webhook")
 async def setup_webhook():
 
-    try:
+    result = await guesty_post(
+        "/webhooks",
+        {
+            "url": RENDER_WEBHOOK_URL,
+            "events": [
+                "reservation.messageReceived"
+            ],
+        },
+    )
 
-        token = await guesty_token()
-
-        async with httpx.AsyncClient(
-            timeout=30
-        ) as client:
-
-            response = await client.post(
-
-                f"{GUESTY_BASE}/webhooks",
-
-                headers={
-                    "Authorization":
-                        f"Bearer {token}",
-
-                    "Accept":
-                        "application/json",
-
-                    "Content-Type":
-                        "application/json",
-                },
-
-                json={
-                    "url":
-                        RENDER_WEBHOOK_URL,
-
-                    "events": [
-                        "reservation.messageReceived"
-                    ],
-                },
-            )
-
-        return {
-
-            "status_code":
-                response.status_code,
-
-            "response":
-                response.text,
-        }
-
-    except Exception as error:
-
-        log.exception(
-            "Webhook setup failed"
-        )
-
-        return {
-
-            "status":
-                "error",
-
-            "error":
-                str(error),
-        }
+    return {
+        "message":
+        "Webhook creation request sent",
+        "result": result,
+    }
 
 
 # ============================================================
-# WEBHOOK RECEVANT LES MESSAGES GUESTY
+# RECEPTION GUESTY
 # ============================================================
 
 @app.post("/guesty/webhook")
@@ -1028,14 +1069,15 @@ async def guesty_webhook(
 ):
 
     payload = await request.json()
-    log.warning("WEBHOOK PAYLOAD: %s", payload)
+
+    # IMPORTANT :
+    # On ne log plus tout le payload pour éviter
+    # d'enregistrer les données personnelles du voyageur.
 
     log.info(
-        "Guesty webhook received"
+        "Guesty webhook received - event=%s",
+        payload.get("event"),
     )
-
-    # On répond immédiatement 200 à Guesty
-    # puis le message est traité en arrière-plan.
 
     background_tasks.add_task(
         process_message,
@@ -1043,6 +1085,5 @@ async def guesty_webhook(
     )
 
     return {
-        "received":
-            True
+        "received": True
     }
