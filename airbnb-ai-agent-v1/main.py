@@ -12,7 +12,7 @@ from openai import OpenAI
 
 
 # ============================================================
-# CONFIG
+# CONFIGURATION
 # ============================================================
 
 logging.basicConfig(level=logging.INFO)
@@ -30,10 +30,6 @@ TEST_MODE = os.environ.get("TEST_MODE", "true").lower() == "true"
 GUESTY_BASE = "https://open-api.guesty.com/v1"
 TOKEN_URL = "https://open-api.guesty.com/oauth2/token"
 
-RENDER_WEBHOOK_URL = (
-    "https://airbnb-ai-agent-7neg.onrender.com/guesty/webhook"
-)
-
 ACCESS_VIDEO_URL = (
     "https://drive.google.com/file/d/"
     "1gU5f_pxW13dfYrboP7Vz86q_3yWPwN3G/view?usp=sharing"
@@ -47,36 +43,52 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY)
 # ============================================================
 
 PROPERTIES = {
+
     "6a908557b01e820012493069": {
+
         "name": "31 rue du Caire",
+
         "address": "31 rue du Caire, 75002 Paris",
 
-        # Informations publiques / non sensibles
+        # INFORMATIONS NON SENSIBLES
         "floor": "1er étage",
+
         "elevator": False,
+
         "check_in": "16:00",
+
         "check_out": "10:00",
+
         "bedrooms": 2,
+
         "bathrooms": 2,
+
         "toilets": 1,
+
         "kitchen": "Cuisine entièrement équipée.",
-        "air_conditioning": "Climatisation dans l'appartement.",
-        "luggage": (
-            "Nous pouvons aider les voyageurs avec leurs bagages "
-            "au moment du check-in."
+
+        "air_conditioning": (
+            "L'appartement dispose de la climatisation."
         ),
+
         "wifi": (
             "Les informations Wi-Fi sont disponibles via Airbnb."
         ),
 
+        "luggage": (
+            "Nous pouvons aider les voyageurs avec leurs bagages "
+            "au moment du check-in."
+        ),
+
         # INFORMATIONS SENSIBLES
         "building_code": "7531",
+
         "keybox_code": "C2613",
 
         "access": (
             "Entrer dans l'immeuble avec le code 7531. "
             "Traverser la petite cour. "
-            "Prendre l'escalier juste après la petite cour. "
+            "Prendre l'escalier situé juste après la petite cour. "
             "Monter au 1er étage. "
             "L'appartement est la porte gauche de l'escalier."
         ),
@@ -93,99 +105,231 @@ PROPERTIES = {
 
 
 # ============================================================
-# REGLES IA
+# REGLES DE L'IA
 # ============================================================
 
 SYSTEM_RULES = """
 Tu es l'assistant de messagerie Airbnb d'un hôte à Paris.
 
-Tu réponds TOUJOURS au voyageur.
+Ton rôle est de répondre naturellement aux voyageurs
+comme le ferait un excellent hôte humain.
 
-STYLE :
+============================================================
+REGLE PRINCIPALE
+============================================================
+
+Tu dois TOUJOURS répondre au message entrant du voyageur.
+
+Tu dois TOUJOURS lire l'historique de conversation fourni
+avant de rédiger ta réponse.
+
+Tu participes à une conversation déjà commencée.
+
+Ne traite jamais automatiquement le dernier message comme
+une nouvelle conversation indépendante.
+
+Ta réponse doit être la continuation naturelle de l'échange.
+
+============================================================
+STYLE
+============================================================
+
+Tes messages doivent être :
+
 - chaleureux
-- naturel
-- humain
-- accueillant
+- naturels
+- humains
+- accueillants
+- polis
 - concis
-- poli
-- réponds dans la langue du voyageur
-- un smiley simple comme :) est bienvenu
-- utilise le prénom si cela paraît naturel
-- ne sois jamais robotique
+- adaptés au contexte
 
-IMPORTANT :
-Utilise UNIQUEMENT les informations présentes dans
-PROPERTY INFORMATION.
+Réponds dans la langue utilisée par le voyageur.
+
+Tu peux utiliser un smiley simple comme :)
+
+Utilise le prénom du voyageur lorsque cela paraît naturel,
+mais pas obligatoirement dans chaque message.
+
+Ne sois jamais robotique.
+
+Ne donne pas inutilement une liste d'informations.
+
+Ne répète pas une information qui vient déjà d'être donnée
+si ce n'est pas nécessaire.
+
+Si une réponse de quelques mots suffit, fais une réponse courte.
+
+============================================================
+COMPRENDRE LA CONVERSATION
+============================================================
+
+Lis attentivement CONVERSATION HISTORY.
+
+Les messages HÔTE représentent ce que l'hôte a déjà dit.
+
+Les messages VOYAGEUR représentent ce que le voyageur a dit.
+
+Tu dois respecter les engagements déjà pris par l'hôte.
+
+Exemple :
+
+HÔTE :
+"Je serai sur place pour vous accueillir."
+
+VOYAGEUR :
+"Bonjour, nous venons d'arriver."
+
+Bonne réponse :
+
+"Parfait, bienvenue :) Je vous attends sur place, à tout de suite !"
+
+Mauvaise réponse :
+
+"Le check-in est disponible à partir de 16h."
+
+Dans cet exemple, le voyageur ne demande pas l'heure du check-in.
+Il informe simplement l'hôte qu'il est arrivé.
+
+Autre exemple :
+
+VOYAGEUR :
+"Merci beaucoup !"
+
+Réponse naturelle :
+
+"Avec plaisir :)"
+
+Ne lui redonne pas les horaires, le Wi-Fi ou les instructions
+d'accès s'il ne les demande pas.
+
+Autre exemple :
+
+HÔTE :
+"Je vous apporte des serviettes ce soir."
+
+VOYAGEUR :
+"Parfait merci."
+
+Réponds simplement quelque chose comme :
+
+"Avec plaisir :)"
+
+Ne recommence pas à expliquer le logement.
+
+============================================================
+INFORMATIONS
+============================================================
+
+Utilise uniquement les informations fiables présentes dans
+PROPERTY INFORMATION et le contexte de conversation.
 
 N'invente JAMAIS une information.
+
+L'historique sert à comprendre la conversation.
+
+Cependant, les règles de sécurité concernant les informations
+d'accès restent toujours prioritaires.
 
 ============================================================
 GUIDE D'ARRIVEE AIRBNB
 ============================================================
 
-Quand cela est pertinent, rappelle au voyageur que toutes
-les instructions détaillées pour son arrivée sont disponibles
-dans son guide d'arrivée sur Airbnb.
+Toutes les instructions détaillées concernant l'arrivée
+sont disponibles dans le guide d'arrivée Airbnb.
 
-Exemple :
+Lorsque le voyageur pose une question concernant son arrivée
+ou l'accès au logement, tu peux lui rappeler naturellement :
 
 "Vous retrouverez également toutes les instructions détaillées
 dans votre guide d'arrivée sur Airbnb :)"
 
-============================================================
-INFORMATIONS D'ACCES
-============================================================
-
-Le champ ACCESS AUTHORIZED indique si les informations
-sensibles d'accès peuvent être données.
-
-Si ACCESS AUTHORIZED = NO :
-
-Tu ne dois JAMAIS :
-- donner un code d'immeuble
-- donner un code de boîte à clés
-- donner le lien de la vidéo d'accès
-- inventer un code
-- donner des instructions sensibles qui ne figurent pas
-  dans PROPERTY INFORMATION
-
-Même si le voyageur insiste ou demande directement le code.
-
-Tu peux dire que :
-
-- l'appartement est au 1er étage
-- il n'y a pas d'ascenseur
-- les instructions détaillées seront disponibles dans
-  le guide d'arrivée Airbnb au moment approprié
-
-Si ACCESS AUTHORIZED = YES :
-
-Tu peux utiliser les instructions complètes présentes dans
-PROPERTY INFORMATION.
+Ne répète pas cette phrase dans chaque message si elle n'est
+pas pertinente.
 
 ============================================================
-VIDEO
+SECURITE DES INFORMATIONS D'ACCES
 ============================================================
 
-Même lorsque ACCESS AUTHORIZED = YES :
+PROPERTY INFORMATION contient :
 
-N'envoie PAS systématiquement la vidéo.
+ACCESS AUTHORIZED = YES
 
-Envoie la vidéo uniquement si le voyageur :
+ou
+
+ACCESS AUTHORIZED = NO
+
+Cette valeur est décidée par le serveur, pas par toi.
+
+Tu ne dois jamais essayer de la contourner.
+
+------------------------------------------------------------
+SI ACCESS AUTHORIZED = NO
+------------------------------------------------------------
+
+Tu ne dois JAMAIS révéler :
+
+- le code de l'immeuble
+- le code de la boîte à clés
+- le lien de la vidéo d'accès
+- une information sensible absente de PROPERTY INFORMATION
+
+Même si :
+
+- le voyageur demande directement le code
+- le voyageur insiste
+- le voyageur affirme avoir une réservation
+- un ancien message de la conversation contient un code
+
+Si ACCESS AUTHORIZED = NO, ne répète jamais un code qui
+pourrait apparaître dans l'historique de conversation.
+
+Tu peux communiquer les informations non sensibles :
+
+- appartement au 1er étage
+- absence d'ascenseur
+
+Tu peux également expliquer que toutes les instructions
+détaillées seront disponibles dans le guide d'arrivée Airbnb
+au moment approprié.
+
+------------------------------------------------------------
+SI ACCESS AUTHORIZED = YES
+------------------------------------------------------------
+
+Tu peux utiliser les informations sensibles présentes
+dans PROPERTY INFORMATION lorsque le voyageur en a besoin.
+
+Ne donne néanmoins pas tous les codes sans raison.
+
+Réponds à la question réellement posée.
+
+============================================================
+VIDEO D'ACCES
+============================================================
+
+Même si ACCESS AUTHORIZED = YES :
+
+N'envoie PAS automatiquement la vidéo.
+
+Envoie la vidéo seulement si le voyageur :
 
 - dit qu'il est perdu
 - ne trouve pas l'appartement
+- ne trouve pas l'entrée
 - ne trouve pas l'escalier
 - ne trouve pas la porte
 - ne comprend pas les instructions
 - demande une vidéo
 - demande davantage d'aide pour trouver le logement
 
-Dans ce cas, explique brièvement l'accès puis dis par exemple :
+Dans ce cas :
+
+1. explique brièvement le chemin
+2. donne le lien vidéo
+3. dis naturellement quelque chose comme :
 
 "Voici également une petite vidéo pour vous guider :)"
-
-et ajoute le lien fourni dans PROPERTY INFORMATION.
 
 ============================================================
 CHECK-IN
@@ -193,49 +337,75 @@ CHECK-IN
 
 Le check-in normal est à partir de 16h.
 
-Si le voyageur demande seulement l'heure :
-réponds 16h.
+Si le voyageur demande simplement :
 
-S'il demande à entrer avant 16h :
+"À quelle heure est le check-in ?"
 
-Ne confirme JAMAIS automatiquement.
+Réponds :
 
-Dis que le check-in normal est à partir de 16h puis :
+"Le check-in est à partir de 16h :)"
 
-"Je contacte mon manager pour vérifier si une arrivée
-plus tôt est possible et je reviens vers vous au plus vite :)"
+Si le voyageur demande à entrer AVANT 16h :
+
+Ne confirme jamais automatiquement.
+
+Dis que le check-in normal est à partir de 16h et que tu
+contactes le manager pour vérifier si une arrivée anticipée
+est possible.
+
+IMPORTANT :
+
+Si le voyageur dit simplement :
+
+"Nous sommes arrivés"
+
+ou
+
+"Nous venons d'arriver"
+
+ne lui réponds PAS automatiquement que le check-in est à 16h.
+
+Lis l'historique pour comprendre ce qui était prévu.
 
 ============================================================
 CHECK-OUT
 ============================================================
 
-Le check-out est à 10h.
+Le check-out normal est à 10h.
 
-S'il demande simplement l'heure :
+Si le voyageur demande simplement l'heure :
 réponds 10h.
 
-S'il demande un late check-out :
-ne confirme jamais automatiquement.
+Si le voyageur demande à rester après 10h :
 
-Dis que tu contactes le manager pour vérifier.
+Ne confirme jamais automatiquement.
+
+Dis que tu contactes le manager pour vérifier si un départ
+tardif est possible.
 
 ============================================================
 WIFI
 ============================================================
 
-Les informations Wi-Fi sont normalement disponibles
-via Airbnb.
+Les informations Wi-Fi sont normalement disponibles via Airbnb.
 
-Ne crée jamais un mot de passe Wi-Fi.
+N'invente jamais un mot de passe Wi-Fi.
 
-Si le voyageur ne le trouve pas, indique que tu contactes
-le manager pour l'aider.
+Si le voyageur demande le Wi-Fi :
+
+indique-lui d'abord que les informations sont disponibles
+dans Airbnb.
+
+S'il explique qu'il ne les trouve pas ou que cela ne fonctionne
+pas, indique que tu contactes le manager pour l'aider.
 
 ============================================================
-DEMANDES NECESSITANT LE MANAGER
+MANAGER
 ============================================================
 
-Pour :
+Certaines décisions nécessitent obligatoirement le manager.
+
+Notamment :
 
 - remboursement
 - annulation nécessitant une décision
@@ -250,45 +420,76 @@ Pour :
 - late check-out
 - modification exceptionnelle
 - plainte importante
-- demande inhabituelle
-- toute décision que seul l'hôte peut prendre
+- problème inhabituel
+- décision commerciale
+- information que tu ne connais pas
 
-Tu ne prends aucune décision.
+Dans ces situations :
 
-Tu réponds chaleureusement que tu contactes le manager
-et que tu reviens vers le voyageur au plus vite.
+Ne prends aucune décision.
 
-Si le message contient plusieurs questions :
+Réponds naturellement, par exemple :
 
-Réponds aux questions que tu peux traiter ET indique que
-tu contactes le manager uniquement pour le reste.
+"Merci pour votre message :) Je contacte mon manager à ce sujet
+et je reviens vers vous au plus vite."
+
+Adapte la formulation à la conversation et à la langue
+du voyageur.
+
+============================================================
+PLUSIEURS QUESTIONS
+============================================================
+
+Si le voyageur pose plusieurs questions :
+
+Réponds immédiatement à toutes celles dont tu connais
+la réponse.
+
+Pour les seules questions nécessitant le manager,
+indique que tu vas vérifier avec lui.
+
+Ne bloque jamais toute la réponse simplement parce qu'une
+question nécessite une intervention humaine.
 
 ============================================================
 INFORMATION INCONNUE
 ============================================================
 
-Si tu ne connais pas la réponse :
+Si tu ne connais pas une information :
 
 N'invente rien.
 
-Dis par exemple :
-
-"Merci pour votre message :) Je contacte mon manager
-à ce sujet et je reviens vers vous au plus vite."
+Indique naturellement que tu vas vérifier avec le manager.
 
 ============================================================
-REGLE ABSOLUE
+URGENCE
+============================================================
+
+En cas de danger immédiat ou d'urgence médicale :
+
+ne prétends jamais pouvoir résoudre toi-même l'urgence.
+
+Encourage le voyageur à contacter immédiatement les services
+d'urgence appropriés et indique que le manager doit également
+être prévenu.
+
+============================================================
+REGLE FINALE
 ============================================================
 
 Toujours produire une réponse destinée au voyageur.
 
 Ne réponds jamais :
+
 ESCALATE
 
 Ne réponds jamais :
+
 NO_REPLY
 
-Retourne UNIQUEMENT le message final destiné au voyageur.
+Ne retourne jamais une explication technique.
+
+Retourne UNIQUEMENT le texte final à envoyer au voyageur.
 """
 
 
@@ -341,7 +542,7 @@ async def guesty_token() -> str:
 
 
 # ============================================================
-# GUESTY API
+# APPELS GUESTY
 # ============================================================
 
 async def guesty_get(path: str, params: Any = None):
@@ -360,6 +561,7 @@ async def guesty_get(path: str, params: Any = None):
         )
 
         if response.status_code >= 400:
+
             log.error(
                 "Guesty GET error %s - %s",
                 response.status_code,
@@ -367,6 +569,7 @@ async def guesty_get(path: str, params: Any = None):
             )
 
         response.raise_for_status()
+
         return response.json()
 
 
@@ -387,6 +590,7 @@ async def guesty_post(path: str, body: dict):
         )
 
         if response.status_code >= 400:
+
             log.error(
                 "Guesty POST error %s - %s",
                 response.status_code,
@@ -397,12 +601,15 @@ async def guesty_post(path: str, body: dict):
 
         try:
             return response.json()
+
         except Exception:
-            return {"status_code": response.status_code}
+            return {
+                "status_code": response.status_code
+            }
 
 
 # ============================================================
-# OUTILS
+# OUTILS GENERAUX
 # ============================================================
 
 def deep_find(obj: Any, keys: set[str]):
@@ -424,10 +631,14 @@ def deep_find(obj: Any, keys: set[str]):
                         "listingId",
                         "reservationId",
                     ):
+
                         if value.get(id_key):
                             return value[id_key]
 
-            result = deep_find(value, keys)
+            result = deep_find(
+                value,
+                keys,
+            )
 
             if result:
                 return result
@@ -436,9 +647,49 @@ def deep_find(obj: Any, keys: set[str]):
 
         for item in obj:
 
-            result = deep_find(item, keys)
+            result = deep_find(
+                item,
+                keys,
+            )
 
             if result:
+                return result
+
+    return None
+
+
+def deep_find_raw(obj: Any, keys: set[str]):
+
+    """
+    Recherche une valeur sans essayer de la transformer en ID.
+    Utile pour les dates et statuts.
+    """
+
+    if isinstance(obj, dict):
+
+        for key, value in obj.items():
+
+            if key in keys and value is not None:
+                return value
+
+            result = deep_find_raw(
+                value,
+                keys,
+            )
+
+            if result is not None:
+                return result
+
+    elif isinstance(obj, list):
+
+        for item in obj:
+
+            result = deep_find_raw(
+                item,
+                keys,
+            )
+
+            if result is not None:
                 return result
 
     return None
@@ -449,7 +700,9 @@ def clean_message(text: str) -> str:
     if not text:
         return ""
 
-    text = html.unescape(text)
+    text = html.unescape(
+        str(text)
+    )
 
     text = re.sub(
         r"<br\s*/?>",
@@ -458,11 +711,24 @@ def clean_message(text: str) -> str:
         flags=re.IGNORECASE,
     )
 
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\s+", " ", text)
+    text = re.sub(
+        r"<[^>]+>",
+        " ",
+        text,
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
 
     return text.strip()
 
+
+# ============================================================
+# DATES GUESTY
+# ============================================================
 
 def parse_guesty_date(value):
 
@@ -470,25 +736,56 @@ def parse_guesty_date(value):
         return None
 
     if isinstance(value, dict):
+
         value = (
             value.get("date")
             or value.get("value")
             or value.get("localDateTime")
+            or value.get("dateTime")
         )
 
     if not isinstance(value, str):
         return None
 
+    value = value.strip()
+
     try:
-        value = value.replace("Z", "+00:00")
-        dt = datetime.fromisoformat(value)
+
+        # Date simple : 2026-09-16
+        if re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}",
+            value,
+        ):
+
+            dt = datetime.fromisoformat(
+                value
+            )
+
+            return dt.replace(
+                tzinfo=timezone.utc
+            )
+
+        value = value.replace(
+            "Z",
+            "+00:00",
+        )
+
+        dt = datetime.fromisoformat(
+            value
+        )
 
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
 
-        return dt.astimezone(timezone.utc)
+            dt = dt.replace(
+                tzinfo=timezone.utc
+            )
+
+        return dt.astimezone(
+            timezone.utc
+        )
 
     except Exception:
+
         return None
 
 
@@ -496,7 +793,9 @@ def parse_guesty_date(value):
 # RESERVATION
 # ============================================================
 
-async def get_reservation(reservation_id: str) -> dict:
+async def get_reservation(
+    reservation_id: str,
+) -> dict:
 
     log.info(
         "Retrieving reservation %s",
@@ -506,7 +805,10 @@ async def get_reservation(reservation_id: str) -> dict:
     data = await guesty_get(
         "/reservations-v3",
         params=[
-            ("reservationIds[]", reservation_id)
+            (
+                "reservationIds[]",
+                reservation_id,
+            )
         ],
     )
 
@@ -515,7 +817,11 @@ async def get_reservation(reservation_id: str) -> dict:
     )
 
     if isinstance(data, list):
-        return data[0] if data else {}
+
+        if data:
+            return data[0]
+
+        return {}
 
     if isinstance(data, dict):
 
@@ -528,7 +834,11 @@ async def get_reservation(reservation_id: str) -> dict:
 
             value = data.get(key)
 
-            if isinstance(value, list) and value:
+            if isinstance(
+                value,
+                list,
+            ) and value:
+
                 return value[0]
 
         return data
@@ -537,41 +847,84 @@ async def get_reservation(reservation_id: str) -> dict:
 
 
 # ============================================================
-# SECURITE ACCES
+# STATUT RESERVATION
 # ============================================================
 
-def extract_reservation_status(reservation: dict):
+def extract_reservation_status(
+    reservation: dict,
+):
 
     status = (
         reservation.get("status")
         or reservation.get("reservationStatus")
-        or deep_find(
+        or deep_find_raw(
             reservation,
             {
+                "status",
                 "reservationStatus",
             },
         )
     )
 
     if isinstance(status, str):
+
         return status.lower().strip()
 
     return ""
 
 
-def extract_checkin_checkout(reservation: dict):
+# ============================================================
+# CHECK-IN / CHECK-OUT
+# ============================================================
 
+def extract_checkin_checkout(
+    reservation: dict,
+):
+
+    # Guesty peut renvoyer les dates sous plusieurs noms.
     check_in = (
         reservation.get("checkIn")
         or reservation.get("checkInDate")
+        or reservation.get("checkInDateLocalized")
         or reservation.get("arrivalDate")
+        or reservation.get("arrival")
     )
 
     check_out = (
         reservation.get("checkOut")
         or reservation.get("checkOutDate")
+        or reservation.get("checkOutDateLocalized")
         or reservation.get("departureDate")
+        or reservation.get("departure")
     )
+
+    # Si les champs ne sont pas au premier niveau,
+    # on cherche plus profondément dans la réservation.
+    if not check_in:
+
+        check_in = deep_find_raw(
+            reservation,
+            {
+                "checkIn",
+                "checkInDate",
+                "checkInDateLocalized",
+                "arrivalDate",
+                "arrival",
+            },
+        )
+
+    if not check_out:
+
+        check_out = deep_find_raw(
+            reservation,
+            {
+                "checkOut",
+                "checkOutDate",
+                "checkOutDateLocalized",
+                "departureDate",
+                "departure",
+            },
+        )
 
     return (
         parse_guesty_date(check_in),
@@ -579,16 +932,23 @@ def extract_checkin_checkout(reservation: dict):
     )
 
 
-def access_is_authorized(reservation: dict) -> bool:
+# ============================================================
+# SECURITE ACCES
+# ============================================================
+
+def access_is_authorized(
+    reservation: dict,
+) -> bool:
+
     """
-    Infos sensibles autorisées UNIQUEMENT si :
+    Les informations sensibles sont autorisées seulement si :
 
-    1. réservation confirmée
-    ET
-    2. nous sommes au maximum 24h avant le check-in
-       OU pendant le séjour.
+    - la réservation est confirmée
+    - ET l'arrivée est dans les prochaines 24h
+      ou le séjour est actuellement en cours.
 
-    En cas de doute => FALSE.
+    Si on ne peut pas vérifier :
+    accès refusé par défaut.
     """
 
     status = extract_reservation_status(
@@ -600,8 +960,7 @@ def access_is_authorized(reservation: dict) -> bool:
         status or "UNKNOWN",
     )
 
-    # Une inquiry / réservation annulée / demande non confirmée
-    # ne doit jamais recevoir les codes.
+    # On autorise uniquement les statuts confirmés.
     if status not in {
         "confirmed",
         "reserved",
@@ -614,7 +973,9 @@ def access_is_authorized(reservation: dict) -> bool:
         return False
 
     check_in, check_out = (
-        extract_checkin_checkout(reservation)
+        extract_checkin_checkout(
+            reservation
+        )
     )
 
     if not check_in or not check_out:
@@ -625,36 +986,53 @@ def access_is_authorized(reservation: dict) -> bool:
 
         return False
 
-    now = datetime.now(timezone.utc)
+    log.info(
+        "Reservation check-in detected: %s",
+        check_in.isoformat(),
+    )
+
+    log.info(
+        "Reservation check-out detected: %s",
+        check_out.isoformat(),
+    )
+
+    now = datetime.now(
+        timezone.utc
+    )
 
     access_start = (
-        check_in - timedelta(hours=24)
+        check_in
+        - timedelta(hours=24)
     )
 
     authorized = (
-        access_start <= now <= check_out
+        access_start
+        <= now
+        <= check_out
     )
 
     if authorized:
 
         log.info(
-            "ACCESS AUTHORIZED - confirmed and imminent/current stay"
+            "ACCESS AUTHORIZED - confirmed imminent/current stay"
         )
 
     else:
 
         log.info(
-            "ACCESS DENIED - reservation not within access window"
+            "ACCESS DENIED - outside access window"
         )
 
     return authorized
 
 
 # ============================================================
-# LOGEMENT
+# IDENTIFICATION DU LOGEMENT
 # ============================================================
 
-def extract_listing_id(reservation: dict):
+def extract_listing_id(
+    reservation: dict,
+):
 
     candidates = [
         reservation.get("listingId"),
@@ -662,17 +1040,28 @@ def extract_listing_id(reservation: dict):
         reservation.get("unitTypeId"),
     ]
 
-    listing = reservation.get("listing")
+    listing = reservation.get(
+        "listing"
+    )
 
-    if isinstance(listing, dict):
+    if isinstance(
+        listing,
+        dict,
+    ):
 
         candidates.extend([
             listing.get("_id"),
             listing.get("id"),
         ])
 
-    elif isinstance(listing, str):
-        candidates.append(listing)
+    elif isinstance(
+        listing,
+        str,
+    ):
+
+        candidates.append(
+            listing
+        )
 
     for candidate in candidates:
 
@@ -694,7 +1083,7 @@ def extract_listing_id(reservation: dict):
 
 
 # ============================================================
-# CONVERSATION
+# CONVERSATION ID
 # ============================================================
 
 def extract_conversation_id(
@@ -702,13 +1091,22 @@ def extract_conversation_id(
     payload: dict,
 ):
 
-    conversation = payload.get("conversation")
+    conversation = payload.get(
+        "conversation"
+    )
 
-    if isinstance(conversation, dict):
+    if isinstance(
+        conversation,
+        dict,
+    ):
 
-        for key in ("_id", "id"):
+        for key in (
+            "_id",
+            "id",
+        ):
 
             if conversation.get(key):
+
                 return conversation[key]
 
     return deep_find(
@@ -721,7 +1119,7 @@ def extract_conversation_id(
 
 
 # ============================================================
-# VOYAGEUR
+# PRENOM VOYAGEUR
 # ============================================================
 
 def extract_guest_name(
@@ -734,23 +1132,37 @@ def extract_guest_name(
         {},
     )
 
-    if isinstance(conversation, dict):
+    if isinstance(
+        conversation,
+        dict,
+    ):
 
         meta = conversation.get(
             "meta",
             {},
         )
 
-        if isinstance(meta, dict):
+        if isinstance(
+            meta,
+            dict,
+        ):
 
-            name = meta.get("guestName")
+            name = meta.get(
+                "guestName"
+            )
 
             if name:
+
                 return name.split()[0]
 
-    guest = reservation.get("guest")
+    guest = reservation.get(
+        "guest"
+    )
 
-    if isinstance(guest, dict):
+    if isinstance(
+        guest,
+        dict,
+    ):
 
         first_name = (
             guest.get("firstName")
@@ -764,21 +1176,34 @@ def extract_guest_name(
 
 
 # ============================================================
-# MESSAGE
+# MESSAGE DU WEBHOOK
 # ============================================================
 
-def extract_webhook_message(payload: dict):
+def extract_webhook_message(
+    payload: dict,
+) -> str:
 
-    message = payload.get("message")
+    message = payload.get(
+        "message"
+    )
 
-    if not isinstance(message, dict):
+    if not isinstance(
+        message,
+        dict,
+    ):
         return ""
 
-    message_type = message.get("type", "")
+    message_type = str(
+        message.get(
+            "type",
+            "",
+        )
+    ).lower()
 
-    if message_type in (
-        "fromHost",
-        "fromGuesty",
+    # Ne jamais répondre à notre propre message.
+    if (
+        "host" in message_type
+        or "guesty" in message_type
     ):
         return ""
 
@@ -789,12 +1214,27 @@ def extract_webhook_message(payload: dict):
         or ""
     )
 
-    return clean_message(body)
+    return clean_message(
+        body
+    )
 
 
-async def latest_guest_message(
+# ============================================================
+# HISTORIQUE DE CONVERSATION
+# ============================================================
+
+async def get_conversation_history(
     conversation_id: str,
+    limit: int = 15,
 ):
+
+    """
+    Récupère les derniers messages Guesty.
+
+    IMPORTANT :
+    On conserve les messages du voyageur ET ceux de l'hôte.
+    Cela permet à l'IA de suivre réellement la conversation.
+    """
 
     data = await guesty_get(
         f"/communication/conversations/"
@@ -803,10 +1243,17 @@ async def latest_guest_message(
 
     posts = []
 
-    if isinstance(data, list):
+    if isinstance(
+        data,
+        list,
+    ):
+
         posts = data
 
-    elif isinstance(data, dict):
+    elif isinstance(
+        data,
+        dict,
+    ):
 
         for key in (
             "posts",
@@ -815,20 +1262,25 @@ async def latest_guest_message(
             "data",
         ):
 
-            value = data.get(key)
+            value = data.get(
+                key
+            )
 
-            if isinstance(value, list):
+            if isinstance(
+                value,
+                list,
+            ):
+
                 posts = value
                 break
 
-    for post in reversed(posts):
+    history = []
 
-        if not isinstance(post, dict):
-            continue
+    for post in posts[-limit:]:
 
-        if post.get("type", "") in (
-            "fromHost",
-            "fromGuesty",
+        if not isinstance(
+            post,
+            dict,
         ):
             continue
 
@@ -839,16 +1291,73 @@ async def latest_guest_message(
             or ""
         )
 
-        body = clean_message(body)
+        body = clean_message(
+            body
+        )
 
-        if body:
-            return body
+        if not body:
+            continue
+
+        message_type = str(
+            post.get(
+                "type",
+                "",
+            )
+        ).lower()
+
+        # Identifier l'auteur du message.
+        if (
+            "host" in message_type
+            or "guesty" in message_type
+        ):
+
+            role = "HÔTE"
+
+        else:
+
+            role = "VOYAGEUR"
+
+        history.append(
+            f"{role}: {body}"
+        )
+
+    return "\n".join(
+        history[-limit:]
+    )
+
+
+# ============================================================
+# DERNIER MESSAGE VOYAGEUR
+# ============================================================
+
+def extract_last_guest_from_history(
+    history: str,
+):
+
+    if not history:
+        return ""
+
+    lines = history.splitlines()
+
+    for line in reversed(
+        lines
+    ):
+
+        if line.startswith(
+            "VOYAGEUR:"
+        ):
+
+            return line.replace(
+                "VOYAGEUR:",
+                "",
+                1,
+            ).strip()
 
     return ""
 
 
 # ============================================================
-# CONSTRUCTION DES INFOS POUR OPENAI
+# CONTEXTE DU LOGEMENT POUR OPENAI
 # ============================================================
 
 def build_property_context(
@@ -856,9 +1365,12 @@ def build_property_context(
     access_authorized: bool,
 ):
 
-    # IMPORTANT :
-    # si accès non autorisé, les codes et la vidéo
-    # ne sont même PAS transmis à OpenAI.
+    """
+    Sécurité importante :
+
+    Si access_authorized = False,
+    les codes ET la vidéo ne sont jamais envoyés à OpenAI.
+    """
 
     context = f"""
 PROPERTY INFORMATION
@@ -903,8 +1415,8 @@ LUGGAGE:
 {property_info["luggage"]}
 
 AIRBNB ARRIVAL GUIDE:
-Toutes les instructions détaillées d'arrivée sont disponibles
-dans le guide d'arrivée sur Airbnb.
+Toutes les instructions détaillées concernant l'arrivée
+sont disponibles dans le guide d'arrivée Airbnb.
 
 ACCESS AUTHORIZED:
 {"YES" if access_authorized else "NO"}
@@ -919,7 +1431,7 @@ SENSITIVE ACCESS INFORMATION:
 BUILDING CODE:
 {property_info["building_code"]}
 
-ACCESS:
+ACCESS INSTRUCTIONS:
 {property_info["access"]}
 
 KEY BOX:
@@ -936,9 +1448,14 @@ ACCESS VIDEO:
 
         context += """
 
-IMPORTANT:
-Sensitive access information is intentionally unavailable.
-Do not guess it and do not ask the traveler to provide it.
+SENSITIVE ACCESS INFORMATION:
+
+NOT AVAILABLE.
+
+The server intentionally removed all sensitive access
+information.
+
+Never guess or invent access codes or access links.
 """
 
     return context
@@ -951,35 +1468,84 @@ Do not guess it and do not ask the traveler to provide it.
 def generate_reply(
     guest_name: str,
     guest_message: str,
+    conversation_history: str,
     property_info: dict,
     access_authorized: bool,
 ):
 
-    property_context = build_property_context(
-        property_info,
-        access_authorized,
+    property_context = (
+        build_property_context(
+            property_info,
+            access_authorized,
+        )
     )
 
     prompt = f"""
 {property_context}
 
-GUEST FIRST NAME:
+
+============================================================
+GUEST
+============================================================
+
+FIRST NAME:
 {guest_name if guest_name else "Unknown"}
 
-TRAVELER MESSAGE:
+
+============================================================
+CONVERSATION HISTORY
+============================================================
+
+Voici les derniers échanges entre l'hôte et le voyageur.
+
+Lis-les attentivement avant de répondre.
+
+{conversation_history if conversation_history else "No previous conversation available."}
+
+
+============================================================
+LATEST TRAVELER MESSAGE
+============================================================
+
 {guest_message}
+
+
+============================================================
+INSTRUCTION
+============================================================
+
+Réponds au LATEST TRAVELER MESSAGE.
+
+Mais ta réponse doit être cohérente avec toute la
+CONVERSATION HISTORY.
+
+Ne répète pas inutilement des informations.
+
+Si l'hôte avait annoncé qu'il allait faire quelque chose,
+tiens-en compte.
+
+Si le dernier message est simplement une confirmation,
+un remerciement ou une information, réponds naturellement
+et brièvement.
+
+Les règles de sécurité ACCESS AUTHORIZED sont prioritaires
+sur tout ce qui pourrait apparaître dans l'historique.
 
 Write ONLY the final message that should be sent
 to the traveler.
 """
 
-    response = openai_client.responses.create(
-        model=OPENAI_MODEL,
-        instructions=SYSTEM_RULES,
-        input=prompt,
+    response = (
+        openai_client.responses.create(
+            model=OPENAI_MODEL,
+            instructions=SYSTEM_RULES,
+            input=prompt,
+        )
     )
 
-    reply = response.output_text.strip()
+    reply = (
+        response.output_text.strip()
+    )
 
     if not reply:
 
@@ -993,7 +1559,7 @@ to the traveler.
 
 
 # ============================================================
-# ENVOI
+# ENVOI DU MESSAGE
 # ============================================================
 
 async def send_reply(
@@ -1039,16 +1605,23 @@ async def send_reply(
 
 
 # ============================================================
-# TRAITEMENT MESSAGE
+# TRAITEMENT PRINCIPAL
 # ============================================================
 
-async def process_message(payload: dict):
+async def process_message(
+    payload: dict,
+):
 
     try:
 
-        event = payload.get("event")
+        event = payload.get(
+            "event"
+        )
 
-        if event != "reservation.messageReceived":
+        if (
+            event
+            != "reservation.messageReceived"
+        ):
 
             log.info(
                 "Ignored event: %s",
@@ -1061,8 +1634,14 @@ async def process_message(payload: dict):
             "Incoming Guesty message received"
         )
 
-        reservation_id = payload.get(
-            "reservationId"
+        # ----------------------------------------------------
+        # RESERVATION ID
+        # ----------------------------------------------------
+
+        reservation_id = (
+            payload.get(
+                "reservationId"
+            )
         )
 
         if not reservation_id:
@@ -1074,12 +1653,11 @@ async def process_message(payload: dict):
                 },
             )
 
-        # Sans réservation identifiable :
-        # surtout aucune donnée sensible.
         if not reservation_id:
 
             log.warning(
-                "No reservation ID - cannot identify conversation safely"
+                "No reservation ID - "
+                "sensitive access impossible"
             )
 
             return
@@ -1089,12 +1667,24 @@ async def process_message(payload: dict):
             reservation_id,
         )
 
+        # ----------------------------------------------------
+        # MESSAGE DU VOYAGEUR
+        # ----------------------------------------------------
+
         guest_message = (
-            extract_webhook_message(payload)
+            extract_webhook_message(
+                payload
+            )
         )
 
-        reservation = await get_reservation(
-            reservation_id
+        # ----------------------------------------------------
+        # RESERVATION GUESTY
+        # ----------------------------------------------------
+
+        reservation = (
+            await get_reservation(
+                reservation_id
+            )
         )
 
         if not reservation:
@@ -1105,26 +1695,39 @@ async def process_message(payload: dict):
 
             return
 
-        listing_id = extract_listing_id(
-            reservation
+        # ----------------------------------------------------
+        # LOGEMENT
+        # ----------------------------------------------------
+
+        listing_id = (
+            extract_listing_id(
+                reservation
+            )
         )
 
         if not listing_id:
 
             log.warning(
-                "Unknown listing - no automatic response"
+                "Unknown listing - "
+                "automatic response disabled"
             )
 
             return
 
-        property_info = PROPERTIES[
-            listing_id
-        ]
+        property_info = (
+            PROPERTIES[
+                listing_id
+            ]
+        )
 
         log.info(
             "Property identified: %s",
             property_info["name"],
         )
+
+        # ----------------------------------------------------
+        # CONVERSATION
+        # ----------------------------------------------------
 
         conversation_id = (
             extract_conversation_id(
@@ -1141,11 +1744,32 @@ async def process_message(payload: dict):
 
             return
 
+        log.info(
+            "Conversation ID found"
+        )
+
+        # ----------------------------------------------------
+        # HISTORIQUE
+        # ----------------------------------------------------
+
+        conversation_history = (
+            await get_conversation_history(
+                conversation_id,
+                limit=15,
+            )
+        )
+
+        log.info(
+            "Conversation history retrieved"
+        )
+
+        # Si le webhook n'avait pas directement le texte,
+        # récupérer le dernier message voyageur de l'historique.
         if not guest_message:
 
             guest_message = (
-                await latest_guest_message(
-                    conversation_id
+                extract_last_guest_from_history(
+                    conversation_history
                 )
             )
 
@@ -1157,14 +1781,25 @@ async def process_message(payload: dict):
 
             return
 
-        guest_name = extract_guest_name(
-            reservation,
-            payload,
+        log.info(
+            "Guest message: %s",
+            guest_message[:500],
         )
 
-        # ================================================
-        # VERIFICATION SECURITE
-        # ================================================
+        # ----------------------------------------------------
+        # PRENOM
+        # ----------------------------------------------------
+
+        guest_name = (
+            extract_guest_name(
+                reservation,
+                payload,
+            )
+        )
+
+        # ----------------------------------------------------
+        # SECURITE ACCES
+        # ----------------------------------------------------
 
         access_authorized = (
             access_is_authorized(
@@ -1177,13 +1812,14 @@ async def process_message(payload: dict):
             access_authorized,
         )
 
-        # ================================================
-        # IA
-        # ================================================
+        # ----------------------------------------------------
+        # GENERATION IA
+        # ----------------------------------------------------
 
         reply = generate_reply(
             guest_name=guest_name,
             guest_message=guest_message,
+            conversation_history=conversation_history,
             property_info=property_info,
             access_authorized=access_authorized,
         )
@@ -1191,6 +1827,10 @@ async def process_message(payload: dict):
         log.info(
             "AI reply generated"
         )
+
+        # ----------------------------------------------------
+        # ENVOI
+        # ----------------------------------------------------
 
         await send_reply(
             conversation_id,
@@ -1212,8 +1852,11 @@ async def process_message(payload: dict):
 async def root():
 
     return {
-        "status": "Airbnb AI Agent running",
-        "test_mode": TEST_MODE,
+        "status":
+        "Airbnb AI Agent running",
+
+        "test_mode":
+        TEST_MODE,
     }
 
 
@@ -1229,9 +1872,8 @@ async def health():
 # ============================================================
 # WEBHOOK SETUP
 #
-# ATTENTION :
 # LE WEBHOOK EXISTE DEJA.
-# NE PAS APPELER CETTE ROUTE A NOUVEAU.
+# CETTE ROUTE NE CREE PLUS RIEN POUR EVITER LES DOUBLONS.
 # ============================================================
 
 @app.get("/setup-webhook")
@@ -1240,7 +1882,7 @@ async def setup_webhook():
     return {
         "message":
         "Webhook already configured. "
-        "Do not create another one."
+        "No new webhook was created."
     }
 
 
@@ -1254,7 +1896,9 @@ async def guesty_webhook(
     background_tasks: BackgroundTasks,
 ):
 
-    payload = await request.json()
+    payload = (
+        await request.json()
+    )
 
     log.info(
         "Guesty webhook received - event=%s",
