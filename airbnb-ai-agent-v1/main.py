@@ -5,7 +5,7 @@ import time
 import html
 import hashlib
 import asyncio
-from datetime import datetime, date, time as dt_time
+from datetime import datetime, date, time as dt_time, timedelta
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -238,6 +238,15 @@ Tu peux donner la vidéo uniquement si :
 - il ne comprend pas les instructions d'accès.
 
 Et uniquement si SENSITIVE_ACCESS_AUTHORIZED = TRUE.
+
+DISPONIBILITÉS / CALENDRIER :
+- Quand le contexte CALENDRIER LIVE est fourni, il vient directement de Guesty et fait foi pour les dates demandées.
+- Si CALENDRIER LIVE indique DISPONIBLE, tu peux confirmer naturellement la disponibilité.
+- Si CALENDRIER LIVE indique INDISPONIBLE, dis simplement que le logement n’est pas disponible sur toute la période demandée.
+- N’invente jamais une disponibilité.
+- Si le voyageur demande si le logement est disponible sans donner de dates précises, demande-lui ses dates d’arrivée et de départ.
+- Ne révèle jamais les détails internes des blocs calendrier, IDs de réservation, noms d’autres voyageurs ou informations privées.
+- Une disponibilité constatée n’est pas une promesse de réservation : précise seulement qu’elle est disponible au moment de la vérification si cela est utile.
 
 CHECK-IN :
 À partir de 16h.
@@ -1832,6 +1841,110 @@ async def get_recent_style_examples(
 
 
 # ============================================================
+# LIVE AVAILABILITY / CALENDAR
+# ============================================================
+
+async def extract_requested_dates(history: str, timezone_name: str) -> Optional[Dict[str, str]]:
+    """Extract an explicit stay period from the guest conversation. Never guesses missing dates."""
+    today = datetime.now(ZoneInfo(timezone_name)).date().isoformat()
+    prompt = f"""
+Today in the property's timezone is {today}.
+Read the Airbnb conversation below and identify whether the guest explicitly asks about availability for a stay with BOTH a check-in date and a check-out date.
+Resolve relative dates only when unambiguous from today's date.
+Return ONLY JSON in one of these forms:
+{{"check_in":"YYYY-MM-DD","check_out":"YYYY-MM-DD"}}
+or
+{{"check_in":null,"check_out":null}}
+Do not guess a missing year/date. Check-out must be after check-in.
+
+CONVERSATION:
+{history}
+"""
+    try:
+        response = await openai_client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": "You extract travel dates. Output valid JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I | re.S).strip()
+        data = json.loads(raw)
+        ci, co = data.get("check_in"), data.get("check_out")
+        if not ci or not co:
+            return None
+        ci_d, co_d = date.fromisoformat(ci), date.fromisoformat(co)
+        if co_d <= ci_d:
+            return None
+        if (co_d - ci_d).days > 365:
+            return None
+        return {"check_in": ci, "check_out": co}
+    except Exception as exc:
+        print(f"Date extraction unavailable: {exc}")
+        return None
+
+
+async def get_live_availability_context(listing_id: str, history: str, timezone_name: str) -> str:
+    dates = await extract_requested_dates(history, timezone_name)
+    if not dates:
+        return "CALENDRIER LIVE : aucune période complète et non ambiguë détectée dans la demande. Ne confirme aucune disponibilité; demande les dates si nécessaire."
+
+    check_in = dates["check_in"]
+    check_out = dates["check_out"]
+    # Guesty calendar is daily. For a stay, nights run from check-in through the day before check-out.
+    last_night = (date.fromisoformat(check_out) - timedelta(days=1)).isoformat()
+    try:
+        payload = await guesty_request(
+            "GET",
+            f"/availability-pricing/api/calendar/listings/{listing_id}",
+            params={
+                "startDate": check_in,
+                "endDate": last_night,
+                "includeAllotment": "true",
+            },
+        )
+        days = []
+        if isinstance(payload, list):
+            days = payload
+        elif isinstance(payload, dict):
+            for key in ("days", "data", "results"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    days = value
+                    break
+                if isinstance(value, dict) and isinstance(value.get("days"), list):
+                    days = value["days"]
+                    break
+
+        expected = (date.fromisoformat(check_out) - date.fromisoformat(check_in)).days
+        if not days or len(days) < expected:
+            print(f"Calendar incomplete for {check_in} -> {check_out}: {len(days)}/{expected} days")
+            return f"CALENDRIER LIVE : vérification Guesty incomplète pour {check_in} → {check_out}. Ne confirme pas la disponibilité; indique que tu vas vérifier."
+
+        unavailable = []
+        for day in days[:expected]:
+            allotment = day.get("allotment")
+            status = str(day.get("status", "")).lower()
+            if isinstance(allotment, (int, float)):
+                available = allotment > 0
+            else:
+                available = status == "available"
+            if not available:
+                unavailable.append(str(day.get("date") or day.get("startDate") or "date bloquée"))
+
+        if unavailable:
+            print(f"LIVE CALENDAR: unavailable {check_in} -> {check_out}")
+            return f"CALENDRIER LIVE GUESTY : période demandée {check_in} → {check_out} = INDISPONIBLE sur toute la période. Ne révèle pas les raisons/blocs internes."
+
+        print(f"LIVE CALENDAR: available {check_in} -> {check_out}")
+        return f"CALENDRIER LIVE GUESTY : période demandée {check_in} → {check_out} = DISPONIBLE au moment de la vérification."
+    except Exception as exc:
+        print(f"ERROR live calendar: {exc}")
+        return f"CALENDRIER LIVE : Guesty n'a pas pu être vérifié pour {check_in} → {check_out}. Ne confirme pas la disponibilité; indique que tu vas vérifier."
+
+
+# ============================================================
 # OPENAI
 # ============================================================
 
@@ -1841,6 +1954,7 @@ async def generate_reply(
     authorized: bool,
     history: str,
     style_examples: List[str],
+    availability_context: str,
 ) -> str:
 
     property_context = build_property_context(
@@ -1881,6 +1995,8 @@ pour inventer des informations sur le logement.
 {property_context}
 
 {guest_name_context}
+
+{availability_context}
 
 HISTORIQUE DE CONVERSATION :
 
@@ -2473,6 +2589,16 @@ async def process_messages(
         )
 
     # --------------------------------------------------------
+    # Live calendar / availability
+    # --------------------------------------------------------
+
+    availability_context = await get_live_availability_context(
+        listing_id,
+        history,
+        property_data["timezone"],
+    )
+
+    # --------------------------------------------------------
     # Style
     # --------------------------------------------------------
 
@@ -2495,6 +2621,7 @@ async def process_messages(
         authorized=authorized,
         history=history,
         style_examples=style_examples,
+        availability_context=availability_context,
     )
 
     print(
@@ -2624,6 +2751,18 @@ def schedule_message(
             conversation_id
         )
     )
+
+
+
+# Per-conversation lock for synchronous webhook processing on Render.
+conversation_locks: Dict[str, asyncio.Lock] = {}
+
+def get_conversation_lock(conversation_id: str) -> asyncio.Lock:
+    lock = conversation_locks.get(conversation_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        conversation_locks[conversation_id] = lock
+    return lock
 
 
 # ============================================================
@@ -2810,17 +2949,22 @@ async def guesty_webhook(
         )
 
     # --------------------------------------------------------
-    # Debounce
+    # Render-safe processing
     # --------------------------------------------------------
+    # Do not detach the important work with create_task().
+    # Keep the webhook request alive through the debounce and processing.
+    # A per-conversation lock ensures simultaneous webhooks cannot send
+    # duplicate replies; the second pass sees the fresh host reply and skips.
 
-    schedule_message(
-        conversation_id,
-        payload,
-    )
+    lock = get_conversation_lock(conversation_id)
+    async with lock:
+        print(f"Waiting {DEBOUNCE_SECONDS}s before processing {conversation_id}")
+        await asyncio.sleep(DEBOUNCE_SECONDS)
+        await process_messages(conversation_id, [payload])
 
     return {
         "ok": True,
-        "scheduled": True,
+        "processed": True,
     }
 
 
