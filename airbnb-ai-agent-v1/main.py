@@ -1,8 +1,8 @@
 import os
 import re
 import json
-import html
 import time
+import html
 import hashlib
 import asyncio
 from datetime import datetime, date, time as dt_time
@@ -11,11 +11,17 @@ from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from openai import AsyncOpenAI
+
+try:
+    from svix.webhooks import Webhook
+except ImportError:
+    Webhook = None
 
 
 # ============================================================
-# CONFIGURATION
+# CONFIG
 # ============================================================
 
 GUESTY_CLIENT_ID = os.getenv("GUESTY_CLIENT_ID")
@@ -23,6 +29,7 @@ GUESTY_CLIENT_SECRET = os.getenv("GUESTY_CLIENT_SECRET")
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6")
+GUESTY_WEBHOOK_SECRET = os.getenv("GUESTY_WEBHOOK_SECRET")
 
 TEST_MODE = os.getenv("TEST_MODE", "true").lower() == "true"
 
@@ -35,7 +42,9 @@ CONVERSATION_POST_LIMIT = 30
 
 STYLE_CONVERSATION_LIMIT = 6
 STYLE_POSTS_PER_CONVERSATION = 10
-STYLE_CACHE_TTL = 1800  # 30 minutes
+STYLE_CACHE_TTL = 1800
+
+PROCESSED_EVENT_TTL = 3600
 
 
 # ============================================================
@@ -56,7 +65,7 @@ app = FastAPI(title="Airbnb AI Agent")
 
 
 # ============================================================
-# PROPRIÉTÉS
+# PROPERTIES
 # ============================================================
 
 PROPERTIES = {
@@ -84,15 +93,17 @@ PROPERTIES = {
 
         "air_conditioning": True,
 
+        # INFORMATIONS SENSIBLES
         "building_code": "7531",
 
         "keybox_code": "C2613",
 
         "access_route": (
             "Entrer dans l'immeuble avec le code 7531, "
-            "traverser la petite cour, prendre l'escalier juste après "
-            "la petite cour, monter au 1er étage. "
-            "L'appartement est la porte à gauche de l'escalier."
+            "traverser la petite cour, "
+            "prendre l'escalier immédiatement après la petite cour, "
+            "monter au 1er étage, "
+            "l'appartement est la porte à gauche de l'escalier."
         ),
 
         "keybox_location": (
@@ -114,57 +125,39 @@ PROPERTIES = {
 
 
 # ============================================================
-# RÈGLES DE L'AGENT
+# SYSTEM PROMPT
 # ============================================================
 
 SYSTEM_RULES = """
 Tu es l'assistant Airbnb d'un hôte.
 
 TON OBJECTIF :
-Répondre naturellement aux voyageurs comme le ferait un hôte humain,
-avec chaleur, précision et bon sens.
+Répondre aux voyageurs comme un vrai hôte humain :
+naturellement, chaleureusement, intelligemment et de manière concise.
 
 STYLE :
 - Réponds dans la langue du voyageur.
-- Sois naturel, chaleureux et concis.
-- Tu peux utiliser ":)" ou "😊" de temps en temps.
-- Ne sois jamais robotique.
-- Ne fais pas de longues listes si ce n'est pas nécessaire.
-- Ne répète pas inutilement les informations déjà dites.
-- Utilise le prénom du voyageur quand il est disponible.
-- Tu peux rassurer et aider intelligemment au lieu de répondre
-  simplement par oui/non.
+- Sois naturel.
+- Sois chaleureux.
+- Sois utile.
+- Évite les réponses robotiques.
+- Utilise le prénom quand il est disponible.
+- Tu peux utiliser ":)" ou un emoji de temps en temps.
+- Ne fais pas de longues listes inutiles.
+- Ne répète pas des informations déjà données.
 
 IMPORTANT :
-Tu dois lire toute la conversation avant de répondre.
+Lis tout l'historique disponible avant de répondre.
 
-Si le voyageur envoie plusieurs messages rapprochés,
-considère-les comme une seule demande globale.
+Si plusieurs messages récents du voyageur correspondent à la même demande,
+réponds à toutes les questions dans UNE SEULE réponse.
 
-Tu dois répondre aux messages entrants.
-Ne reste jamais silencieux simplement parce qu'une partie de la demande
-est inconnue.
+NE RÉPONDS PAS séparément à chaque message.
 
-Si tu connais une partie de la réponse mais pas le reste :
-- réponds à ce que tu sais ;
-- puis indique naturellement que tu vas vérifier le reste auprès du manager.
+INQUIRIES / AVANT RÉSERVATION :
+Une personne qui n'a pas encore réservé doit quand même recevoir une réponse.
 
-EXEMPLES :
-
-Voyageur :
-"Y a-t-il un ascenseur ?"
-
-Mauvaise réponse :
-"Non."
-
-Bonne logique :
-"Il n'y a pas d'ascenseur, l'appartement est au 1er étage :)
-Si vous avez des bagages, nous pouvons bien sûr vous aider à votre arrivée."
-
-VOYAGEUR AVANT RÉSERVATION :
-Les voyageurs qui posent des questions avant de réserver doivent recevoir
-une vraie réponse.
-L'absence de réservation ne signifie PAS qu'il faut ignorer le message.
+L'absence de réservation n'est PAS une raison pour ignorer le message.
 
 Tu peux répondre aux questions générales concernant :
 - l'appartement
@@ -175,16 +168,31 @@ Tu peux répondre aux questions générales concernant :
 - la cuisine
 - la climatisation
 - les équipements connus
-- le quartier si l'information est fournie
-- le check-in général
-- le check-out général
+- le check-in
+- le check-out
 
 NE JAMAIS INVENTER une information.
 
 Si une information n'est pas connue :
-dis simplement que tu vas vérifier auprès du manager.
+dis naturellement que tu vas vérifier auprès du manager.
+
+INTELLIGENCE :
+Ne réponds pas mécaniquement.
+
+Exemple :
+
+Voyageur :
+"Y a-t-il un ascenseur ?"
+
+Ne réponds pas simplement :
+"Non."
+
+Réponds plutôt :
+"Il n'y a pas d'ascenseur, l'appartement est au 1er étage :)
+Si vous avez des bagages, nous pouvons bien sûr vous aider à votre arrivée."
 
 DEMANDES SENSIBLES :
+
 Pour :
 - remboursement
 - annulation exceptionnelle
@@ -193,64 +201,70 @@ Pour :
 - litige
 - paiement
 - problème sérieux
-- demande inhabituelle
 - décision commerciale
 - problème de sécurité
 - urgence médicale
 
-ne prends jamais la décision toi-même.
+ne prends aucune décision toi-même.
 
 Réponds naturellement que tu vas voir cela avec le manager.
 
-ACCÈS :
-Les codes d'accès et informations d'accès détaillées sont confidentiels.
+ACCÈS SENSIBLE :
 
-Ils ne doivent être communiqués que si le serveur t'indique explicitement
-que l'accès sensible est autorisé.
+Les codes d'accès et informations détaillées d'accès sont confidentiels.
 
-Si l'accès sensible n'est PAS autorisé :
+Ils ne doivent être utilisés que si le serveur indique explicitement :
+
+SENSITIVE_ACCESS_AUTHORIZED = TRUE
+
+Sinon :
 - ne donne aucun code ;
-- ne donne pas l'URL de la vidéo ;
+- ne donne pas le lien vidéo ;
 - ne donne pas le chemin détaillé ;
 - tu peux dire que l'appartement est au 1er étage ;
 - tu peux dire qu'il n'y a pas d'ascenseur ;
-- indique que toutes les instructions sont disponibles
-  sur le guide d'arrivée sur Airbnb.
+- indique que toutes les instructions sont disponibles sur le guide d'arrivée Airbnb.
 
 VIDÉO :
-Ne propose pas spontanément la vidéo à chaque message.
 
-Utilise la vidéo uniquement si :
-- le voyageur demande la vidéo ;
-- il dit qu'il est perdu ;
+Ne donne PAS automatiquement la vidéo.
+
+Tu peux donner la vidéo uniquement si :
+- le voyageur la demande ;
+- il est perdu ;
 - il ne trouve pas l'entrée ;
 - il ne trouve pas l'escalier ;
 - il ne trouve pas l'appartement ;
 - il ne comprend pas les instructions d'accès.
 
-Si la vidéo est disponible dans le contexte et que l'accès sensible est autorisé,
-tu peux donner son lien.
+Et uniquement si SENSITIVE_ACCESS_AUTHORIZED = TRUE.
 
 CHECK-IN :
-Le check-in commence à 16h.
+À partir de 16h.
 
 CHECK-OUT :
-Le check-out est à 10h.
+10h.
+
+IMPORTANT :
+Une réponse doit toujours répondre au dernier message du voyageur.
+
+Si tu connais une partie de la demande mais pas le reste :
+réponds à la partie connue puis indique naturellement que tu vas vérifier le reste.
 
 UNE SEULE RÉPONSE :
-Génère uniquement le message destiné au voyageur.
+Retourne uniquement le message à envoyer au voyageur.
 Pas d'analyse.
+Pas d'explication.
 Pas de commentaire interne.
-Pas de "Voici la réponse".
 """
 
 
 # ============================================================
-# CACHE TOKENS GUESTY
+# GUESTY TOKEN
 # ============================================================
 
 _guesty_token: Optional[str] = None
-_guesty_token_expires_at: float = 0
+_guesty_token_expires_at = 0.0
 
 
 async def get_guesty_token() -> str:
@@ -260,22 +274,23 @@ async def get_guesty_token() -> str:
 
     now = time.time()
 
-    if _guesty_token and now < (_guesty_token_expires_at - 300):
+    if (
+        _guesty_token
+        and now < _guesty_token_expires_at - 300
+    ):
         return _guesty_token
 
-    if not GUESTY_CLIENT_ID or not GUESTY_CLIENT_SECRET:
-        raise RuntimeError("Guesty credentials missing")
+    if not GUESTY_CLIENT_ID:
+        raise RuntimeError("GUESTY_CLIENT_ID missing")
+
+    if not GUESTY_CLIENT_SECRET:
+        raise RuntimeError("GUESTY_CLIENT_SECRET missing")
 
     data = {
         "grant_type": "client_credentials",
         "scope": "open-api",
-        "client_secret": GUESTY_CLIENT_SECRET,
         "client_id": GUESTY_CLIENT_ID,
-    }
-
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/x-www-form-urlencoded",
+        "client_secret": GUESTY_CLIENT_SECRET,
     }
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -283,7 +298,10 @@ async def get_guesty_token() -> str:
         response = await client.post(
             GUESTY_TOKEN_URL,
             data=data,
-            headers=headers,
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
         )
 
         response.raise_for_status()
@@ -292,21 +310,22 @@ async def get_guesty_token() -> str:
 
     _guesty_token = payload["access_token"]
 
-    expires_in = int(payload.get("expires_in", 86400))
-
-    _guesty_token_expires_at = time.time() + expires_in
+    _guesty_token_expires_at = (
+        time.time()
+        + int(payload.get("expires_in", 86400))
+    )
 
     return _guesty_token
 
 
 # ============================================================
-# HTTP GUESTY
+# GUESTY REQUEST
 # ============================================================
 
 async def guesty_request(
     method: str,
     endpoint: str,
-    **kwargs
+    **kwargs,
 ):
 
     token = await get_guesty_token()
@@ -325,7 +344,6 @@ async def guesty_request(
             **kwargs,
         )
 
-        # Si token expiré, on renouvelle une fois
         if response.status_code in (401, 403):
 
             global _guesty_token
@@ -347,34 +365,73 @@ async def guesty_request(
 
         response.raise_for_status()
 
-        if response.content:
-            return response.json()
+        if not response.content:
+            return {}
 
-        return {}
+        return response.json()
 
 
 # ============================================================
-# HELPERS JSON
+# UTILS
 # ============================================================
 
 def first_value(*values):
 
     for value in values:
-        if value not in (None, "", [], {}):
+
+        if value not in (
+            None,
+            "",
+            [],
+            {},
+        ):
             return value
 
     return None
 
 
-def extract_id(obj: Any) -> Optional[str]:
+def clean_message(value: Any) -> str:
 
-    if not isinstance(obj, dict):
-        return None
+    if value is None:
+        return ""
 
-    return first_value(
-        obj.get("_id"),
-        obj.get("id"),
+    text = str(value)
+
+    text = html.unescape(text)
+
+    text = re.sub(
+        r"<br\s*/?>",
+        "\n",
+        text,
+        flags=re.I,
     )
+
+    text = re.sub(
+        r"</p\s*>",
+        "\n",
+        text,
+        flags=re.I,
+    )
+
+    text = re.sub(
+        r"<[^>]+>",
+        " ",
+        text,
+    )
+
+    text = re.sub(
+        r"[ \t]+",
+        " ",
+        text,
+    )
+
+    text = re.sub(
+        r"\n\s+",
+        "\n",
+        text,
+    )
+
+    return text.strip()
 
 
 def extract_results(payload: Any) -> List[Dict[str, Any]]:
@@ -385,7 +442,13 @@ def extract_results(payload: Any) -> List[Dict[str, Any]]:
     if not isinstance(payload, dict):
         return []
 
-    for key in ("results", "data", "posts", "conversations"):
+    for key in (
+        "results",
+        "data",
+        "posts",
+        "conversations",
+    ):
+
         value = payload.get(key)
 
         if isinstance(value, list):
@@ -394,69 +457,70 @@ def extract_results(payload: Any) -> List[Dict[str, Any]]:
     return []
 
 
-# ============================================================
-# NETTOYAGE HTML
-# ============================================================
+def extract_object_id(
+    obj: Any,
+) -> Optional[str]:
 
-def clean_message(text: Any) -> str:
+    if not isinstance(obj, dict):
+        return None
 
-    if not text:
-        return ""
-
-    text = str(text)
-
-    text = html.unescape(text)
-
-    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.I)
-    text = re.sub(r"</p\s*>", "\n", text, flags=re.I)
-
-    text = re.sub(r"<[^>]+>", " ", text)
-
-    text = re.sub(r"\s+\n", "\n", text)
-    text = re.sub(r"\n\s+", "\n", text)
-    text = re.sub(r"[ \t]+", " ", text)
-
-    return text.strip()
+    return first_value(
+        obj.get("_id"),
+        obj.get("id"),
+    )
 
 
 # ============================================================
-# RÉSERVATION
+# RESERVATION
 # ============================================================
 
 async def get_reservation(
-    reservation_id: str
+    reservation_id: str,
 ) -> Optional[Dict[str, Any]]:
 
     try:
 
-        params = [
-            ("reservationIds[]", reservation_id)
-        ]
-
         payload = await guesty_request(
             "GET",
             "/reservations-v3",
-            params=params,
+            params=[
+                (
+                    "reservationIds[]",
+                    reservation_id,
+                )
+            ],
         )
 
         results = extract_results(payload)
 
         if results:
-            print("Reservation retrieved successfully")
+
+            print(
+                "Reservation retrieved successfully"
+            )
+
             return results[0]
 
-        if isinstance(payload, dict):
+        if (
+            isinstance(payload, dict)
+            and payload.get("_id") == reservation_id
+        ):
 
-            if payload.get("_id") == reservation_id:
-                print("Reservation retrieved successfully")
-                return payload
+            print(
+                "Reservation retrieved successfully"
+            )
+
+            return payload
 
         print("Reservation not found")
+
         return None
 
     except Exception as exc:
 
-        print(f"ERROR get_reservation: {exc}")
+        print(
+            f"ERROR get_reservation: {exc}"
+        )
 
         return None
 
@@ -466,110 +530,79 @@ async def get_reservation(
 # ============================================================
 
 async def get_conversation(
-    conversation_id: str
+    conversation_id: str,
 ) -> Optional[Dict[str, Any]]:
 
     try:
 
-        payload = await guesty_request(
+        return await guesty_request(
             "GET",
-            f"/communication/conversations/{conversation_id}",
+            f"/communication/conversations/"
+            f"{conversation_id}",
         )
-
-        return payload
 
     except Exception as exc:
 
-        print(f"ERROR get_conversation: {exc}")
+        print(
+            f"Conversation retrieval failed: {exc}"
+        )
 
         return None
 
 
 async def get_conversation_posts(
     conversation_id: str,
-    limit: int = CONVERSATION_POST_LIMIT,
 ) -> List[Dict[str, Any]]:
 
     try:
 
         payload = await guesty_request(
             "GET",
-            f"/communication/conversations/{conversation_id}/posts",
+            f"/communication/conversations/"
+            f"{conversation_id}/posts",
             params={
                 "sort": "-createdAt",
-                "limit": limit,
+                "limit": CONVERSATION_POST_LIMIT,
             },
         )
 
         posts = extract_results(payload)
 
-        # Guesty renvoie normalement les plus récents en premier.
-        posts.reverse()
+        if posts:
+            posts.reverse()
 
         return posts
 
     except Exception as exc:
 
-        print(f"ERROR get_conversation_posts: {exc}")
+        print(
+            f"Conversation posts unavailable: {exc}"
+        )
 
         return []
 
 
 # ============================================================
-# EXTRACTION IDS
+# EXTRACTION WEBHOOK
 # ============================================================
 
-def extract_reservation_id(
-    payload: Dict[str, Any],
-    conversation: Optional[Dict[str, Any]] = None,
-) -> Optional[str]:
-
-    reservation_id = first_value(
-        payload.get("reservationId"),
-        payload.get("reservation", {}).get("_id")
-        if isinstance(payload.get("reservation"), dict)
-        else None,
-    )
-
-    if reservation_id:
-        return reservation_id
-
-    conversation = conversation or payload.get("conversation") or {}
-
-    meta = conversation.get("meta", {})
-
-    reservations = meta.get("reservations", [])
-
-    if isinstance(reservations, list):
-
-        # On prend le dernier / premier selon disponibilité
-        for reservation in reservations:
-
-            if isinstance(reservation, dict):
-
-                rid = first_value(
-                    reservation.get("_id"),
-                    reservation.get("id"),
-                )
-
-                if rid:
-                    return rid
-
-    return None
-
-
 def extract_conversation_id(
-    payload: Dict[str, Any]
+    payload: Dict[str, Any],
 ) -> Optional[str]:
 
-    conversation = payload.get("conversation")
+    conversation = payload.get(
+        "conversation"
+    )
 
     if isinstance(conversation, dict):
 
-        return first_value(
+        conversation_id = first_value(
             conversation.get("_id"),
             conversation.get("id"),
         )
+
+        if conversation_id:
+            return str(conversation_id)
 
     return first_value(
         payload.get("conversationId"),
@@ -577,41 +610,209 @@ def extract_conversation_id(
     )
 
 
+async def recover_conversation_id_from_inquiry(
+    payload: Dict[str, Any],
+) -> Optional[str]:
+    """Best-effort recovery for pre-booking inquiries that have no reservation.
+
+    We never fabricate a conversation id: we inspect recent Guesty conversations and
+    require the webhook message text to match the latest guest message.
+    """
+    message = payload.get("message")
+    if not isinstance(message, dict):
+        message = {}
+
+    target_body = post_text(message)
+    if not target_body:
+        conversation = payload.get("conversation")
+        if isinstance(conversation, dict):
+            for key in ("message", "lastMessage"):
+                candidate = conversation.get(key)
+                if isinstance(candidate, dict):
+                    target_body = post_text(candidate)
+                    if target_body:
+                        break
+
+    if not target_body:
+        return None
+
+    try:
+        recent = await guesty_request(
+            "GET",
+            "/communication/conversations",
+            params={"limit": 30, "sort": "-createdAt"},
+        )
+        conversations = extract_results(recent)
+
+        matches: List[str] = []
+        for conv in conversations:
+            if not isinstance(conv, dict) or not is_guest_conversation(conv):
+                continue
+            cid = extract_object_id(conv)
+            if not cid:
+                continue
+
+            posts = await get_conversation_posts(str(cid))
+            latest_guest = get_latest_guest_post(posts)
+            if not latest_guest:
+                continue
+
+            if post_text(latest_guest).strip() == target_body.strip():
+                matches.append(str(cid))
+                if len(matches) > 1:
+                    # Ambiguous: fail closed rather than reply in the wrong thread.
+                    return None
+
+        return matches[0] if len(matches) == 1 else None
+
+    except Exception as exc:
+        print(f"Inquiry conversation recovery failed: {exc}")
+        return None
+
+
+async def recover_conversation_id_from_reservation(
+    reservation_id: Optional[str],
+) -> Optional[str]:
+    if not reservation_id:
+        return None
+    reservation = await get_reservation(str(reservation_id))
+    if not reservation:
+        return None
+    conversation = reservation.get("conversation")
+    if isinstance(conversation, dict):
+        cid = first_value(conversation.get("_id"), conversation.get("id"))
+        if cid:
+            return str(cid)
+    cid = first_value(reservation.get("conversationId"), reservation.get("conversation_id"))
+    if cid:
+        return str(cid)
+    conversation_ids = reservation.get("conversationIds")
+    if isinstance(conversation_ids, list) and conversation_ids:
+        return str(conversation_ids[0])
+    return None
+
+
+def is_guest_conversation(conversation: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(conversation, dict):
+        return True
+    conversation_with = conversation.get("conversationWith")
+    if conversation_with is None:
+        return True
+    return str(conversation_with).strip().lower() == "guest"
+
+
+def extract_reservation_id(
+    payload: Dict[str, Any],
+) -> Optional[str]:
+
+    reservation_id = first_value(
+        payload.get("reservationId"),
+    )
+
+    if reservation_id:
+        return str(reservation_id)
+
+    reservation = payload.get(
+        "reservation"
+    )
+
+    if isinstance(reservation, dict):
+
+        reservation_id = first_value(
+            reservation.get("_id"),
+            reservation.get("id"),
+        )
+
+        if reservation_id:
+            return str(reservation_id)
+
+    conversation = payload.get(
+        "conversation"
+    )
+
+    if isinstance(conversation, dict):
+
+        meta = conversation.get(
+            "meta"
+        )
+
+        if isinstance(meta, dict):
+
+            reservations = meta.get(
+                "reservations"
+            )
+
+            if isinstance(reservations, list):
+
+                for reservation in reservations:
+
+                    if not isinstance(
+                        reservation,
+                        dict,
+                    ):
+                        continue
+
+                    reservation_id = first_value(
+                        reservation.get("_id"),
+                        reservation.get("id"),
+                    )
+
+                    if reservation_id:
+                        return str(reservation_id)
+
+    return None
+
+
 def extract_listing_id(
     reservation: Optional[Dict[str, Any]],
     conversation: Optional[Dict[str, Any]],
+    payload: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
 
     reservation = reservation or {}
     conversation = conversation or {}
+    payload = payload or {}
 
     candidates = [
 
+        payload.get("listingId"),
+
+        payload.get("listing", {}).get("_id")
+        if isinstance(
+            payload.get("listing"),
+            dict,
+        )
+        else None,
+
         reservation.get("listingId"),
 
-        reservation.get("listing", {}).get("_id")
-        if isinstance(reservation.get("listing"), dict)
-        else None,
-
-        reservation.get("listing", {}).get("id")
-        if isinstance(reservation.get("listing"), dict)
-        else None,
+        reservation.get("lastStayListingId"),
 
         reservation.get("unitId"),
 
         reservation.get("unitTypeId"),
 
-        conversation.get("listingId"),
-
-        conversation.get("listing", {}).get("_id")
-        if isinstance(conversation.get("listing"), dict)
+        reservation.get("listing", {}).get("_id")
+        if isinstance(
+            reservation.get("listing"),
+            dict,
+        )
         else None,
+
+        conversation.get("listingId"),
 
         conversation.get("lastStayListingId"),
 
         conversation.get("unitId"),
 
         conversation.get("unitTypeId"),
+
+        conversation.get("listing", {}).get("_id")
+        if isinstance(
+            conversation.get("listing"),
+            dict,
+        )
+        else None,
     ]
 
     for candidate in candidates:
@@ -619,16 +820,19 @@ def extract_listing_id(
         if candidate:
             return str(candidate)
 
-    # Si un seul logement est configuré,
-    # on peut l'utiliser pour les inquiries sans reservationId.
+    # UNE SEULE propriété :
+    # fallback sûr pour les inquiries.
     if len(PROPERTIES) == 1:
-        return next(iter(PROPERTIES.keys()))
+
+        return next(
+            iter(PROPERTIES.keys())
+        )
 
     return None
 
 
 # ============================================================
-# NOM VOYAGEUR
+# GUEST NAME
 # ============================================================
 
 def extract_guest_name(
@@ -639,16 +843,22 @@ def extract_guest_name(
     conversation = conversation or {}
     reservation = reservation or {}
 
-    meta = conversation.get("meta", {})
-
-    name = first_value(
-        meta.get("guestName"),
+    meta = conversation.get(
+        "meta"
     )
 
-    if name:
-        return str(name).strip()
+    if isinstance(meta, dict):
 
-    guest = reservation.get("guest")
+        name = meta.get(
+            "guestName"
+        )
+
+        if name:
+            return str(name).strip()
+
+    guest = reservation.get(
+        "guest"
+    )
 
     if isinstance(guest, dict):
 
@@ -660,12 +870,19 @@ def extract_guest_name(
         if name:
             return str(name).strip()
 
-        first = guest.get("firstName")
-        last = guest.get("lastName")
+        first = guest.get(
+            "firstName"
+        )
+
+        last = guest.get(
+            "lastName"
+        )
 
         if first or last:
+
             return " ".join(
-                x for x in [first, last]
+                x
+                for x in [first, last]
                 if x
             ).strip()
 
@@ -673,51 +890,302 @@ def extract_guest_name(
 
 
 # ============================================================
-# DATES / ACCÈS
+# MESSAGE TYPES
 # ============================================================
 
-def parse_datetime(value: Any) -> Optional[datetime]:
+def is_guest_post(
+    post: Dict[str, Any],
+) -> bool:
+
+    message_type = str(
+        post.get("type", "")
+    )
+
+    return message_type in (
+        "fromGuest",
+        "fromThirdParty",
+    )
+
+
+def is_host_post(
+    post: Dict[str, Any],
+) -> bool:
+
+    message_type = str(
+        post.get("type", "")
+    )
+
+    return message_type in (
+        "fromHost",
+        "fromGuesty",
+    )
+
+
+def post_text(
+    post: Dict[str, Any],
+) -> str:
+
+    return clean_message(
+        first_value(
+            post.get("body"),
+            post.get("text"),
+        )
+    )
+
+
+# ============================================================
+# FALLBACK WEBHOOK -> POSTS
+# ============================================================
+
+def webhook_thread_to_posts(
+    payload: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+
+    conversation = payload.get(
+        "conversation"
+    )
+
+    if not isinstance(
+        conversation,
+        dict,
+    ):
+        conversation = {}
+
+    posts = []
+
+    # --------------------------------------------------------
+    # 1. conversation.thread
+    # --------------------------------------------------------
+
+    thread = conversation.get(
+        "thread"
+    )
+
+    if isinstance(thread, list):
+
+        for item in thread:
+
+            if isinstance(item, dict):
+
+                posts.append(
+                    dict(item)
+                )
+
+    # --------------------------------------------------------
+    # 2. conversation.message / body
+    # --------------------------------------------------------
+
+    for key in (
+        "message",
+        "lastMessage",
+    ):
+
+        item = conversation.get(
+            key
+        )
+
+        if isinstance(item, dict):
+            
+            msg_copy = dict(item)
+            if not msg_copy.get("type"):
+                msg_copy["type"] = "fromGuest"
+
+            posts.append(
+                msg_copy
+            )
+
+    # --------------------------------------------------------
+    # 3. top-level webhook message
+    # --------------------------------------------------------
+
+    message = payload.get(
+        "message"
+    )
+
+    if isinstance(message, dict):
+        
+        msg_copy = dict(message)
+        if not msg_copy.get("type"):
+            msg_copy["type"] = "fromGuest"
+
+        posts.append(
+            msg_copy
+        )
+
+    # --------------------------------------------------------
+    # Déduplication des posts
+    # --------------------------------------------------------
+
+    unique = {}
+
+    for post in posts:
+
+        post_id = first_value(
+            post.get("postId"),
+            post.get("_id"),
+            post.get("id"),
+        )
+
+        body = post_text(post)
+
+        if not body:
+            continue
+
+        key = (
+            str(post_id)
+            if post_id
+            else hashlib.sha256(
+                (
+                    f"{post.get('createdAt','')}"
+                    f"|{body}"
+                ).encode("utf-8")
+            ).hexdigest()
+        )
+
+        unique[key] = post
+
+    result = list(
+        unique.values()
+    )
+
+    result.sort(
+        key=lambda x: (
+            str(
+                x.get("createdAt")
+                or x.get("sentAt")
+                or ""
+            )
+        )
+    )
+
+    return result
+
+
+# ============================================================
+# FALLBACK MESSAGES GROUPÉS
+# ============================================================
+
+def payloads_to_posts(
+    payloads: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+
+    posts = []
+
+    for payload in payloads:
+
+        posts.extend(
+            webhook_thread_to_posts(
+                payload
+            )
+        )
+
+    unique = {}
+
+    for post in posts:
+
+        post_id = first_value(
+            post.get("postId"),
+            post.get("_id"),
+            post.get("id"),
+        )
+
+        body = post_text(post)
+
+        if not body:
+            continue
+
+        key = (
+            str(post_id)
+            if post_id
+            else hashlib.sha256(
+                (
+                    f"{post.get('createdAt','')}"
+                    f"|{body}"
+                ).encode("utf-8")
+            ).hexdigest()
+        )
+
+        unique[key] = post
+
+    result = list(
+        unique.values()
+    )
+
+    result.sort(
+        key=lambda x: (
+            str(
+                x.get("createdAt")
+                or x.get("sentAt")
+                or ""
+            )
+        )
+    )
+
+    return result
+
+
+# ============================================================
+# SECURITY / SENSITIVE ACCESS
+# ============================================================
+
+def parse_datetime(
+    value: Any,
+) -> Optional[datetime]:
 
     if not value:
         return None
 
-    if isinstance(value, datetime):
+    if isinstance(
+        value,
+        datetime,
+    ):
         return value
 
-    if isinstance(value, date):
+    if isinstance(
+        value,
+        date,
+    ):
 
         return datetime.combine(
             value,
             dt_time.min,
         )
 
-    value = str(value).strip()
+    text = str(value).strip()
 
     try:
 
-        if value.endswith("Z"):
-            value = value[:-1] + "+00:00"
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
 
-        return datetime.fromisoformat(value)
+        return datetime.fromisoformat(
+            text
+        )
 
     except Exception:
+
         return None
 
 
 def localize_datetime(
-    dt: datetime,
+    value: datetime,
     timezone_name: str,
 ) -> datetime:
 
-    tz = ZoneInfo(timezone_name)
+    tz = ZoneInfo(
+        timezone_name
+    )
 
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=tz)
+    if value.tzinfo is None:
 
-    return dt.astimezone(tz)
+        return value.replace(
+            tzinfo=tz
+        )
+
+    return value.astimezone(tz)
 
 
-def localized_date_to_datetime(
+def make_local_date_time(
     value: Any,
     hour: int,
     minute: int,
@@ -727,16 +1195,21 @@ def localized_date_to_datetime(
     if not value:
         return None
 
+    tz = ZoneInfo(
+        timezone_name
+    )
+
     try:
 
-        if isinstance(value, datetime):
+        if isinstance(
+            value,
+            datetime,
+        ):
 
-            dt = value
-
-            if dt.tzinfo is None:
-                dt = dt.replace(
-                    tzinfo=ZoneInfo(timezone_name)
-                )
+            dt = localize_datetime(
+                value,
+                timezone_name,
+            )
 
             return dt.replace(
                 hour=hour,
@@ -745,19 +1218,27 @@ def localized_date_to_datetime(
                 microsecond=0,
             )
 
-        if isinstance(value, date):
+        if isinstance(
+            value,
+            date,
+        ):
 
             return datetime.combine(
                 value,
-                dt_time(hour, minute),
-                tzinfo=ZoneInfo(timezone_name),
+                dt_time(
+                    hour,
+                    minute,
+                ),
+                tzinfo=tz,
             )
 
         text = str(value).strip()
 
         if "T" in text:
 
-            dt = parse_datetime(text)
+            dt = parse_datetime(
+                text
+            )
 
             if dt:
 
@@ -773,12 +1254,17 @@ def localized_date_to_datetime(
                     microsecond=0,
                 )
 
-        parsed_date = date.fromisoformat(text[:10])
+        parsed = date.fromisoformat(
+            text[:10]
+        )
 
         return datetime.combine(
-            parsed_date,
-            dt_time(hour, minute),
-            tzinfo=ZoneInfo(timezone_name),
+            parsed,
+            dt_time(
+                hour,
+                minute,
+            ),
+            tzinfo=tz,
         )
 
     except Exception:
@@ -792,115 +1278,160 @@ def access_is_authorized(
 ) -> bool:
 
     if not reservation:
-        print("No reservation - sensitive access impossible")
+
+        print(
+            "No reservation - sensitive access impossible"
+        )
+
         return False
 
     status = str(
-        reservation.get("status", "")
+        reservation.get(
+            "status",
+            "",
+        )
     ).lower()
 
-    print(f"Reservation status for access check: {status}")
+    print(
+        f"Reservation status for access check: {status}"
+    )
 
-    if status not in ("confirmed", "reserved"):
-        print("ACCESS DENIED - reservation status")
+    if status not in (
+        "confirmed",
+        "reserved",
+    ):
+
+        print(
+            "ACCESS DENIED - reservation status"
+        )
+
         return False
 
-    timezone_name = property_data["timezone"]
+    timezone_name = property_data[
+        "timezone"
+    ]
 
-    tz = ZoneInfo(timezone_name)
+    tz = ZoneInfo(
+        timezone_name
+    )
 
     now = datetime.now(tz)
 
     checkin = None
     checkout = None
 
-    # Priorité aux dates localisées Guesty
-    checkin_localized = reservation.get(
-        "checkInDateLocalized"
+    # --------------------------------------------------------
+    # Dates localisées Guesty
+    # --------------------------------------------------------
+
+    checkin_date = first_value(
+        reservation.get(
+            "checkInDateLocalized"
+        ),
+        reservation.get(
+            "checkinDateLocalized"
+        ),
     )
 
-    checkout_localized = reservation.get(
-        "checkOutDateLocalized"
+    checkout_date = first_value(
+        reservation.get(
+            "checkOutDateLocalized"
+        ),
+        reservation.get(
+            "checkoutDateLocalized"
+        ),
     )
 
-    if checkin_localized:
+    if checkin_date:
 
-        checkin = localized_date_to_datetime(
-            checkin_localized,
+        checkin = make_local_date_time(
+            checkin_date,
             16,
             0,
             timezone_name,
         )
 
-    if checkout_localized:
+    if checkout_date:
 
-        checkout = localized_date_to_datetime(
-            checkout_localized,
+        checkout = make_local_date_time(
+            checkout_date,
             10,
             0,
             timezone_name,
         )
 
-    # Fallback
+    # --------------------------------------------------------
+    # Fallback timestamps
+    # --------------------------------------------------------
+
     if not checkin:
 
         for key in (
             "checkIn",
+            "checkin",
             "checkInDate",
             "arrivalDate",
         ):
 
-            if reservation.get(key):
+            value = reservation.get(
+                key
+            )
 
-                dt = parse_datetime(
-                    reservation[key]
+            dt = parse_datetime(
+                value
+            )
+
+            if dt:
+
+                checkin = localize_datetime(
+                    dt,
+                    timezone_name,
+                ).replace(
+                    hour=16,
+                    minute=0,
+                    second=0,
+                    microsecond=0,
                 )
 
-                if dt:
-
-                    checkin = localize_datetime(
-                        dt,
-                        timezone_name,
-                    ).replace(
-                        hour=16,
-                        minute=0,
-                        second=0,
-                        microsecond=0,
-                    )
-
-                    break
+                break
 
     if not checkout:
 
         for key in (
             "checkOut",
+            "checkout",
             "checkOutDate",
             "departureDate",
         ):
 
-            if reservation.get(key):
+            value = reservation.get(
+                key
+            )
 
-                dt = parse_datetime(
-                    reservation[key]
+            dt = parse_datetime(
+                value
+            )
+
+            if dt:
+
+                checkout = localize_datetime(
+                    dt,
+                    timezone_name,
+                ).replace(
+                    hour=10,
+                    minute=0,
+                    second=0,
+                    microsecond=0,
                 )
 
-                if dt:
-
-                    checkout = localize_datetime(
-                        dt,
-                        timezone_name,
-                    ).replace(
-                        hour=10,
-                        minute=0,
-                        second=0,
-                        microsecond=0,
-                    )
-
-                    break
+                break
 
     if not checkin or not checkout:
 
-        print("ACCESS DENIED - dates unavailable")
+        print(
+            "ACCESS DENIED - dates unavailable"
+        )
+
         return False
 
     print(
@@ -913,17 +1444,9 @@ def access_is_authorized(
         f"{checkout.isoformat()}"
     )
 
-    # Autorisation :
-    # 24h avant le check-in jusqu'au check-out.
-    authorized_from = checkin.replace(
-        hour=16,
-        minute=0,
-        second=0,
-        microsecond=0,
-    )
-
-    authorized_from = authorized_from.timestamp() - (
-        24 * 60 * 60
+    authorized_from = (
+        checkin.timestamp()
+        - 24 * 60 * 60
     )
 
     authorized_from = datetime.fromtimestamp(
@@ -931,14 +1454,13 @@ def access_is_authorized(
         tz=tz,
     )
 
-    authorized_until = checkout.replace(
-        hour=10,
-        minute=0,
-        second=0,
-        microsecond=0,
-    )
+    authorized_until = checkout
 
-    if authorized_from <= now <= authorized_until:
+    if (
+        authorized_from
+        <= now
+        <= authorized_until
+    ):
 
         print(
             "ACCESS AUTHORIZED - "
@@ -956,153 +1478,124 @@ def access_is_authorized(
 
 
 # ============================================================
-# CONTEXTE PROPRIÉTÉ
+# PROPERTY CONTEXT
 # ============================================================
 
 def build_property_context(
     property_data: Dict[str, Any],
-    sensitive_access_authorized: bool,
+    authorized: bool,
 ) -> str:
 
-    lines = [
+    context = f"""
+LOGEMENT :
+{property_data["name"]}
 
-        f"LOGEMENT : {property_data['name']}",
+ADRESSE :
+{property_data["address"] if authorized else "Adresse exacte non communicable avant autorisation d'accès"}
 
-        f"ADRESSE : {property_data['address']}",
+CHECK-IN :
+{property_data["check_in_time"]}
 
-        f"CHECK-IN : {property_data['check_in_time']}",
+CHECK-OUT :
+{property_data["check_out_time"]}
 
-        f"CHECK-OUT : {property_data['check_out_time']}",
+ÉTAGE :
+{property_data["floor"]}
 
-        f"ÉTAGE : {property_data['floor']}",
+ASCENSEUR :
+{"oui" if property_data["elevator"] else "non"}
 
-        f"ASCENSEUR : "
-        f"{'oui' if property_data['elevator'] else 'non'}",
+CHAMBRES :
+{property_data["bedrooms"]}
 
-        f"CHAMBRES : {property_data['bedrooms']}",
+SALLES DE BAIN :
+{property_data["bathrooms"]}
 
-        f"SALLES DE BAIN : {property_data['bathrooms']}",
+WC :
+{property_data["wc"]}
 
-        f"WC : {property_data['wc']}",
+CUISINE ÉQUIPÉE :
+{"oui" if property_data["fully_equipped_kitchen"] else "non"}
 
-        f"CUISINE ÉQUIPÉE : "
-        f"{'oui' if property_data['fully_equipped_kitchen'] else 'non'}",
+CLIMATISATION :
+{"oui" if property_data["air_conditioning"] else "non"}
 
-        f"CLIMATISATION : "
-        f"{'oui' if property_data['air_conditioning'] else 'non'}",
-    ]
+SENSITIVE_ACCESS_AUTHORIZED :
+{str(authorized).upper()}
+"""
 
-    if sensitive_access_authorized:
+    if authorized:
 
-        lines.extend([
+        context += f"""
 
-            "",
+INFORMATIONS D'ACCÈS AUTORISÉES :
 
-            "ACCÈS SENSIBLE AUTORISÉ : OUI",
+CODE IMMEUBLE :
+{property_data["building_code"]}
 
-            f"CODE IMMEUBLE : "
-            f"{property_data['building_code']}",
+CODE BOÎTE À CLÉS :
+{property_data["keybox_code"]}
 
-            f"CODE BOÎTE À CLÉS : "
-            f"{property_data['keybox_code']}",
+EMPLACEMENT BOÎTE À CLÉS :
+{property_data["keybox_location"]}
 
-            f"EMPLACEMENT BOÎTE À CLÉS : "
-            f"{property_data['keybox_location']}",
+CHEMIN D'ACCÈS :
+{property_data["access_route"]}
 
-            f"CHEMIN D'ACCÈS : "
-            f"{property_data['access_route']}",
-
-            f"VIDÉO D'ACCÈS : "
-            f"{property_data['video_url']}",
-        ])
+VIDÉO D'ACCÈS :
+{property_data["video_url"]}
+"""
 
     else:
 
-        lines.extend([
+        context += """
 
-            "",
+INFORMATIONS D'ACCÈS SENSIBLES INTERDITES.
 
-            "ACCÈS SENSIBLE AUTORISÉ : NON",
+NE DONNE PAS :
+- le code immeuble
+- le code boîte à clés
+- le chemin détaillé
+- le lien vidéo
 
-            "NE JAMAIS donner les codes d'accès.",
+Tu peux seulement indiquer :
+- appartement au 1er étage
+- pas d'ascenseur
+- toutes les instructions sont disponibles
+  sur le guide d'arrivée Airbnb.
+"""
 
-            "NE JAMAIS donner le lien vidéo.",
-
-            "NE JAMAIS donner le chemin détaillé.",
-
-            "Tu peux uniquement préciser que "
-            "l'appartement est au 1er étage et qu'il n'y a pas d'ascenseur.",
-
-            "Toutes les instructions sont disponibles "
-            "sur le guide d'arrivée sur Airbnb.",
-        ])
-
-    return "\n".join(lines)
+    return context.strip()
 
 
 # ============================================================
-# HISTORIQUE
+# HISTORY
 # ============================================================
-
-def is_host_post(post: Dict[str, Any]) -> bool:
-
-    post_type = str(
-        post.get("type", "")
-    )
-
-    return post_type in (
-        "fromHost",
-        "fromGuesty",
-    )
-
-
-def is_guest_post(post: Dict[str, Any]) -> bool:
-
-    post_type = str(
-        post.get("type", "")
-    )
-
-    return post_type in (
-        "fromGuest",
-        "fromThirdParty",
-    )
-
 
 def sanitize_sensitive_text(
     text: str,
     property_data: Dict[str, Any],
     authorized: bool,
 ) -> str:
-
     if authorized:
         return text
-
-    replacements = [
-
-        (
-            property_data.get("building_code"),
-            "[CODE D'ACCÈS MASQUÉ]",
-        ),
-
-        (
-            property_data.get("keybox_code"),
-            "[CODE BOÎTE À CLÉS MASQUÉ]",
-        ),
-
-        (
-            property_data.get("video_url"),
-            "[VIDÉO D'ACCÈS MASQUÉE]",
-        ),
+    sensitive_values = [
+        property_data.get("building_code"),
+        property_data.get("keybox_code"),
+        property_data.get("video_url"),
+        property_data.get("address"),
+        property_data.get("access_route"),
+        property_data.get("keybox_location"),
     ]
-
-    for secret, replacement in replacements:
-
+    for secret in sensitive_values:
         if secret:
-            text = text.replace(
-                str(secret),
-                replacement,
-            )
-
+            text = text.replace(str(secret), "[INFORMATION SENSIBLE MASQUÉE]")
+    text = re.sub(r"https?://\S+", "[URL MASQUÉE]", text)
+    text = re.sub(
+        r"(?i)\b(code(?:\s+(?:immeuble|porte|bo[iî]te\s*[àa]\s*cl[eé]s?))?\s*[:=-]?\s*)[A-Z]?\d{3,8}\b",
+        r"\1[CODE MASQUÉ]",
+        text,
+    )
     return text
 
 
@@ -1112,32 +1605,27 @@ def build_conversation_history(
     authorized: bool,
 ) -> str:
 
-    history = []
+    lines = []
 
     for post in posts:
 
-        body = clean_message(
-            post.get("body")
+        body = post_text(
+            post
         )
 
         if not body:
             continue
 
-        post_type = str(
-            post.get("type", "")
-        )
-
-        if is_host_post(post):
-
-            role = "HÔTE"
-
-        elif is_guest_post(post):
+        if is_guest_post(post):
 
             role = "VOYAGEUR"
 
+        elif is_host_post(post):
+
+            role = "HÔTE"
+
         else:
 
-            # On ignore les logs / événements système
             continue
 
         body = sanitize_sensitive_text(
@@ -1146,45 +1634,48 @@ def build_conversation_history(
             authorized,
         )
 
-        history.append(
+        lines.append(
             f"{role}: {body}"
         )
 
-    return "\n".join(history)
+    return "\n".join(lines)
 
 
 # ============================================================
-# STYLE
+# STYLE CACHE
 # ============================================================
 
 _style_cache: Dict[
     str,
-    Dict[str, Any]
+    Dict[str, Any],
 ] = {}
 
 
 def sanitize_style_example(
     text: str,
-    property_data: Optional[Dict[str, Any]] = None,
+    property_data: Dict[str, Any],
 ) -> str:
 
-    text = clean_message(text)
+    text = clean_message(
+        text
+    )
 
-    if property_data:
+    for secret in (
+        property_data.get("building_code"),
+        property_data.get("keybox_code"),
+        property_data.get("video_url"),
+        property_data.get("address"),
+        property_data.get("access_route"),
+        property_data.get("keybox_location"),
+    ):
 
-        for secret in (
-            property_data.get("building_code"),
-            property_data.get("keybox_code"),
-            property_data.get("video_url"),
-        ):
+        if secret:
 
-            if secret:
-                text = text.replace(
-                    str(secret),
-                    "[INFO D'ACCÈS]",
-                )
+            text = text.replace(
+                str(secret),
+                "[INFO SENSIBLE]",
+            )
 
-    # Protection générale URLs / emails / téléphones
     text = re.sub(
         r"https?://\S+",
         "[URL]",
@@ -1207,31 +1698,34 @@ def sanitize_style_example(
 
 
 async def get_recent_style_examples(
-    token: str,
     listing_id: Optional[str],
-    property_data: Optional[Dict[str, Any]],
+    property_data: Dict[str, Any],
 ) -> List[str]:
 
-    cache_key = listing_id or "__global__"
+    cache_key = (
+        listing_id
+        or "__global__"
+    )
 
-    cached = _style_cache.get(cache_key)
+    cached = _style_cache.get(
+        cache_key
+    )
 
     now = time.time()
 
     if cached:
 
-        if now - cached["timestamp"] < STYLE_CACHE_TTL:
+        if (
+            now - cached["timestamp"]
+            < STYLE_CACHE_TTL
+        ):
 
             return cached["examples"]
 
     try:
 
         params = {
-
-            "type": "guest",
-
             "limit": STYLE_CONVERSATION_LIMIT,
-
             "sort": "-createdAt",
         }
 
@@ -1264,7 +1758,7 @@ async def get_recent_style_examples(
 
         for conversation in conversations:
 
-            conversation_id = extract_id(
+            conversation_id = extract_object_id(
                 conversation
             )
 
@@ -1272,20 +1766,26 @@ async def get_recent_style_examples(
                 continue
 
             posts = await get_conversation_posts(
-                conversation_id,
-                STYLE_POSTS_PER_CONVERSATION,
+                conversation_id
             )
 
             for post in posts:
 
-                if not is_host_post(post):
+                if not is_host_post(
+                    post
+                ):
                     continue
 
-                if post.get("isAutomatic") is True:
+                if (
+                    post.get(
+                        "isAutomatic"
+                    )
+                    is True
+                ):
                     continue
 
-                body = clean_message(
-                    post.get("body")
+                body = post_text(
+                    post
                 )
 
                 if not body:
@@ -1297,7 +1797,9 @@ async def get_recent_style_examples(
                 )
 
                 if body:
-                    examples.append(body)
+                    examples.append(
+                        body
+                    )
 
                 if len(examples) >= 12:
                     break
@@ -1305,14 +1807,17 @@ async def get_recent_style_examples(
             if len(examples) >= 12:
                 break
 
-        _style_cache[cache_key] = {
+        _style_cache[
+            cache_key
+        ] = {
             "timestamp": now,
             "examples": examples,
         }
 
         print(
-            f"Style cache refreshed for listing "
-            f"{cache_key}: {len(examples)} examples"
+            f"Style cache refreshed "
+            f"for listing {cache_key}: "
+            f"{len(examples)} examples"
         )
 
         return examples
@@ -1320,21 +1825,21 @@ async def get_recent_style_examples(
     except Exception as exc:
 
         print(
-            f"ERROR get_recent_style_examples: {exc}"
+            f"ERROR style cache: {exc}"
         )
 
         return []
 
 
 # ============================================================
-# RÉPONSE OPENAI
+# OPENAI
 # ============================================================
 
 async def generate_reply(
     guest_name: Optional[str],
     property_data: Dict[str, Any],
     authorized: bool,
-    conversation_history: str,
+    history: str,
     style_examples: List[str],
 ) -> str:
 
@@ -1348,8 +1853,8 @@ async def generate_reply(
     if style_examples:
 
         style_context = (
-            "\n\nEXEMPLES DU STYLE DE L'HÔTE "
-            "À IMITER UNIQUEMENT POUR LE TON :\n"
+            "\n\nSTYLE DE L'HÔTE "
+            "(uniquement pour le ton) :\n"
         )
 
         for example in style_examples:
@@ -1358,12 +1863,13 @@ async def generate_reply(
                 f"- {example}\n"
             )
 
-        style_context += (
-            "\nIMPORTANT : ces exemples servent uniquement "
-            "à apprendre le ton et la manière d'écrire. "
-            "N'en déduis aucune information factuelle "
-            "sur le logement.\n"
-        )
+        style_context += """
+Ces exemples servent uniquement à reproduire
+le ton et la façon d'écrire de l'hôte.
+
+N'utilise jamais leur contenu factuel
+pour inventer des informations sur le logement.
+"""
 
     guest_name_context = (
         f"Prénom du voyageur : {guest_name}"
@@ -1371,63 +1877,46 @@ async def generate_reply(
         else "Prénom du voyageur inconnu"
     )
 
-    prompt = f"""
+    user_prompt = f"""
 {property_context}
 
 {guest_name_context}
 
-HISTORIQUE COMPLET DE LA CONVERSATION :
-{conversation_history}
+HISTORIQUE DE CONVERSATION :
+
+{history}
 
 {style_context}
 
-Analyse toute la conversation et réponds au dernier message
-du voyageur.
+Réponds au dernier message du voyageur.
 
-Si plusieurs messages récents du voyageur forment une seule demande,
-réponds à toutes les questions dans UNE SEULE réponse.
+Si plusieurs messages récents forment une même demande,
+réponds à tous les points en UNE SEULE réponse.
 
-Réponds comme un vrai hôte Airbnb :
-naturel, chaleureux, utile et concis.
-
-Ne parle jamais de ton fonctionnement interne.
-Ne dis jamais que tu es une IA.
+Sois naturel, chaleureux, utile et concis.
 """
 
-    try:
+    response = await openai_client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=[
+            {"role": "system", "content": SYSTEM_RULES},
+            {"role": "user", "content": user_prompt}
+        ]
+    )
 
-        response = await openai_client.responses.create(
-            model=OPENAI_MODEL,
-            instructions=SYSTEM_RULES,
-            input=prompt,
+    reply = response.choices[0].message.content.strip()
+
+    if not reply:
+
+        raise RuntimeError(
+            "OpenAI returned empty response"
         )
 
-        reply = (
-            response.output_text
-            if hasattr(response, "output_text")
-            else ""
-        )
-
-        reply = reply.strip()
-
-        if not reply:
-            raise RuntimeError(
-                "OpenAI returned an empty response"
-            )
-
-        return reply
-
-    except Exception as exc:
-
-        print(
-            f"ERROR OpenAI generate_reply: {exc}"
-        )
-
-        raise
+    return reply
 
 
 # ============================================================
-# ENVOI MESSAGE
+# SEND
 # ============================================================
 
 async def send_reply(
@@ -1438,21 +1927,28 @@ async def send_reply(
     if TEST_MODE:
 
         print("")
-        print("==============================")
-        print("TEST MODE - MESSAGE NOT SENT")
-        print("==============================")
+        print(
+            "================================"
+        )
+        print(
+            "TEST MODE - MESSAGE NOT SENT"
+        )
+        print(
+            "================================"
+        )
         print("")
-        print("AI WOULD REPLY:")
+        print(
+            "AI WOULD REPLY:"
+        )
         print(reply)
         print("")
+
         return
 
     payload = {
-
         "module": {
             "type": "airbnb2"
         },
-
         "body": reply,
     }
 
@@ -1466,19 +1962,19 @@ async def send_reply(
         },
     )
 
-    print("MESSAGE SENT SUCCESSFULLY")
+    print(
+        "MESSAGE SENT SUCCESSFULLY"
+    )
 
 
 # ============================================================
-# DÉDUPLICATION
+# DEDUPLICATION
 # ============================================================
 
 processed_events: Dict[
     str,
-    float
+    float,
 ] = {}
-
-PROCESSED_EVENT_TTL = 3600
 
 
 def cleanup_processed_events():
@@ -1488,9 +1984,12 @@ def cleanup_processed_events():
     expired = [
 
         key
+
         for key, timestamp
         in processed_events.items()
-        if now - timestamp > PROCESSED_EVENT_TTL
+
+        if now - timestamp
+        > PROCESSED_EVENT_TTL
     ]
 
     for key in expired:
@@ -1502,58 +2001,86 @@ def cleanup_processed_events():
 
 
 def make_event_key(
-    payload: Dict[str, Any]
+    payload: Dict[str, Any],
 ) -> str:
 
-    message = payload.get(
-        "message",
-        {},
+    meta = payload.get(
+        "meta"
     )
 
-    conversation = payload.get(
-        "conversation",
-        {},
+    if not isinstance(
+        meta,
+        dict,
+    ):
+        meta = {}
+
+    message = payload.get(
+        "message"
     )
+
+    if not isinstance(
+        message,
+        dict,
+    ):
+        message = {}
 
     event_id = first_value(
 
-        payload.get("eventId"),
+        meta.get(
+            "eventId"
+        ),
 
-        payload.get("id"),
+        meta.get(
+            "messageId"
+        ),
 
-        message.get("postId")
-        if isinstance(message, dict)
-        else None,
+        payload.get(
+            "eventId"
+        ),
 
-        message.get("_id")
-        if isinstance(message, dict)
-        else None,
+        payload.get(
+            "messageId"
+        ),
 
-        message.get("id")
-        if isinstance(message, dict)
-        else None,
+        message.get(
+            "postId"
+        ),
+
+        message.get(
+            "_id"
+        ),
+
+        message.get(
+            "id"
+        ),
     )
 
     if event_id:
 
-        return str(event_id)
-
-    conversation_id = extract_conversation_id(
-        payload
-    )
-
-    message_body = ""
-
-    if isinstance(message, dict):
-
-        message_body = clean_message(
-            message.get("body")
+        return str(
+            event_id
         )
 
-    raw = (
-        f"{conversation_id}|"
-        f"{message_body}|"
-        f"{message.get('createdAt') if isinstance(message, dict) else ''}"
+    raw = json.dumps(
+        {
+            "event": payload.get(
+                "event"
+            ),
+            "conversationId":
+                extract_conversation_id(
+                    payload
+                ),
+            "createdAt":
+                message.get(
+                    "createdAt"
+                ),
+            "body":
+                post_text(
+                    message
+                ),
+        },
+        sort_keys=True,
+        default=str,
     )
 
     return hashlib.sha256(
@@ -1562,23 +2089,26 @@ def make_event_key(
 
 
 # ============================================================
-# DERNIER MESSAGE VOYAGEUR
+# GUEST LATEST MESSAGE
 # ============================================================
 
-def get_latest_guest_message(
-    posts: List[Dict[str, Any]]
+def get_latest_guest_post(
+    posts: List[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
 
-    for post in reversed(posts):
+    for post in reversed(
+        posts
+    ):
 
-        if not is_guest_post(post):
+        if not is_guest_post(
+            post
+        ):
             continue
 
-        body = clean_message(
-            post.get("body")
-        )
+        if post_text(
+            post
+        ):
 
-        if body:
             return post
 
     return None
@@ -1589,73 +2119,103 @@ def host_replied_after_guest(
     guest_post: Dict[str, Any],
 ) -> bool:
 
-    guest_created = parse_datetime(
-        guest_post.get("createdAt")
+    guest_time = parse_datetime(
+        first_value(
+            guest_post.get(
+                "createdAt"
+            ),
+            guest_post.get(
+                "sentAt"
+            ),
+        )
     )
 
-    if not guest_created:
+    if not guest_time:
         return False
 
     for post in posts:
 
-        if not is_host_post(post):
+        if not is_host_post(
+            post
+        ):
             continue
 
-        host_created = parse_datetime(
-            post.get("createdAt")
+        host_time = parse_datetime(
+            first_value(
+                post.get(
+                    "createdAt"
+                ),
+                post.get(
+                    "sentAt"
+                ),
+            )
         )
 
-        if not host_created:
+        if not host_time:
             continue
 
-        if host_created > guest_created:
+        if host_time > guest_time:
+
             return True
 
     return False
 
 
 # ============================================================
-# TRAITEMENT PRINCIPAL
+# MAIN PROCESSING
 # ============================================================
 
-async def process_message(
-    payload: Dict[str, Any]
+async def process_messages(
+    conversation_id: str,
+    payloads: List[Dict[str, Any]],
 ):
 
-    event = payload.get("event")
-
-    if event != "reservation.messageReceived":
-
-        print(
-            f"Ignored event: {event}"
-        )
-
-        return
-
-    conversation_id = extract_conversation_id(
-        payload
+    print("")
+    print(
+        "================================"
+    )
+    print(
+        f"PROCESSING CONVERSATION "
+        f"{conversation_id}"
+    )
+    print(
+        f"Grouped webhooks: {len(payloads)}"
+    )
+    print(
+        "================================"
     )
 
-    if not conversation_id:
+    # --------------------------------------------------------
+    # Dernier payload
+    # --------------------------------------------------------
 
-        print(
-            "No conversation ID - cannot process"
+    latest_payload = payloads[-1]
+
+    # --------------------------------------------------------
+    # Reservation
+    # --------------------------------------------------------
+
+    reservation_id = None
+
+    for payload in reversed(
+        payloads
+    ):
+
+        reservation_id = extract_reservation_id(
+            payload
         )
 
-        return
-
-    conversation = payload.get(
-        "conversation"
-    ) or {}
-
-    reservation_id = extract_reservation_id(
-        payload,
-        conversation,
-    )
+        if reservation_id:
+            break
 
     reservation = None
 
     if reservation_id:
+
+        print(
+            f"Reservation ID: "
+            f"{reservation_id}"
+        )
 
         reservation = await get_reservation(
             reservation_id
@@ -1664,13 +2224,24 @@ async def process_message(
     else:
 
         print(
-            "No reservation ID - inquiry / "
-            "pre-booking conversation"
+            "No reservation ID - "
+            "inquiry / pre-booking conversation"
         )
 
     # --------------------------------------------------------
-    # CONVERSATION
+    # Conversation
     # --------------------------------------------------------
+
+    conversation = latest_payload.get(
+        "conversation"
+    )
+
+    if not isinstance(
+        conversation,
+        dict,
+    ):
+
+        conversation = {}
 
     fresh_conversation = await get_conversation(
         conversation_id
@@ -1680,17 +2251,22 @@ async def process_message(
 
         conversation = fresh_conversation
 
+    if not is_guest_conversation(conversation):
+        print("Non-guest / owner conversation - skipping")
+        return
+
     print(
         "Conversation ID found"
     )
 
     # --------------------------------------------------------
-    # PROPERTY
+    # Property
     # --------------------------------------------------------
 
     listing_id = extract_listing_id(
         reservation,
         conversation,
+        latest_payload,
     )
 
     if not listing_id:
@@ -1708,7 +2284,8 @@ async def process_message(
     if not property_data:
 
         print(
-            f"Unknown listing ID: {listing_id}"
+            f"Unknown listing ID: "
+            f"{listing_id}"
         )
 
         return
@@ -1719,7 +2296,7 @@ async def process_message(
     )
 
     # --------------------------------------------------------
-    # ACCESS
+    # Sensitive access
     # --------------------------------------------------------
 
     authorized = access_is_authorized(
@@ -1733,61 +2310,145 @@ async def process_message(
     )
 
     # --------------------------------------------------------
-    # FULL CONVERSATION
+    # 1. Try Guesty posts
     # --------------------------------------------------------
 
     posts = await get_conversation_posts(
         conversation_id
     )
 
+    if posts:
+
+        print(
+            f"Conversation posts retrieved: "
+            f"{len(posts)}"
+        )
+
+    else:
+
+        print(
+            "No conversation posts returned."
+        )
+
+        print(
+            "USING WEBHOOK FALLBACK."
+        )
+
+        # ----------------------------------------------------
+        # 2. conversation.thread + message
+        # ----------------------------------------------------
+
+        posts = payloads_to_posts(
+            payloads
+        )
+
+        # Si get_conversation a fourni un thread,
+        # on l'utilise également.
+        if not posts:
+
+            posts = webhook_thread_to_posts(
+                {
+                    "conversation":
+                        conversation,
+                    "message":
+                        latest_payload.get(
+                            "message"
+                        ),
+                }
+            )
+
+        print(
+            f"Fallback posts available: "
+            f"{len(posts)}"
+        )
+
+    # --------------------------------------------------------
+    # Aucun message exploitable
+    # --------------------------------------------------------
+
     if not posts:
 
         print(
-            "No conversation posts found"
+            "ERROR: no usable guest message "
+            "found anywhere."
         )
+
+        # IMPORTANT :
+        # on affiche seulement la structure,
+        # pas les secrets.
+        message = latest_payload.get(
+            "message"
+        )
+
+        webhook_conversation = latest_payload.get(
+            "conversation"
+        )
+
+        if isinstance(
+            message,
+            dict,
+        ):
+
+            print(
+                "Webhook message keys: "
+                f"{list(message.keys())}"
+            )
+
+        if isinstance(
+            webhook_conversation,
+            dict,
+        ):
+
+            print(
+                "Webhook conversation keys: "
+                f"{list(webhook_conversation.keys())}"
+            )
 
         return
 
     # --------------------------------------------------------
-    # DERNIER MESSAGE VOYAGEUR
+    # Dernier message voyageur
     # --------------------------------------------------------
 
-    guest_post = get_latest_guest_message(
+    guest_post = get_latest_guest_post(
         posts
     )
 
     if not guest_post:
 
         print(
-            "No guest message found"
+            "No guest message found."
         )
 
         return
 
-    # Si l'hôte a déjà répondu après ce message,
-    # on ne répond surtout pas une deuxième fois.
+    guest_message = post_text(
+        guest_post
+    )
+
+    print(
+        f"Guest message: "
+        f"{guest_message}"
+    )
+
+    # --------------------------------------------------------
+    # Anti double-réponse
+    # --------------------------------------------------------
+
     if host_replied_after_guest(
         posts,
         guest_post,
     ):
 
         print(
-            "Host already replied after latest "
-            "guest message - skipping"
+            "Host already replied after "
+            "latest guest message - skipping"
         )
 
         return
 
-    guest_message = clean_message(
-        guest_post.get("body")
-    )
-
-    print(
-        f"Guest message: {guest_message}"
-    )
-
     # --------------------------------------------------------
-    # NOM
+    # Guest name
     # --------------------------------------------------------
 
     guest_name = extract_guest_name(
@@ -1796,41 +2457,52 @@ async def process_message(
     )
 
     # --------------------------------------------------------
-    # HISTORIQUE
+    # History
     # --------------------------------------------------------
 
-    conversation_history = build_conversation_history(
+    history = build_conversation_history(
         posts,
         property_data,
         authorized,
     )
 
-    # --------------------------------------------------------
-    # STYLE
-    # --------------------------------------------------------
+    if not history:
 
-    token = await get_guesty_token()
+        history = (
+            f"VOYAGEUR: {guest_message}"
+        )
+
+    # --------------------------------------------------------
+    # Style
+    # --------------------------------------------------------
 
     style_examples = await get_recent_style_examples(
-        token,
         listing_id,
         property_data,
     )
 
     # --------------------------------------------------------
-    # OPENAI
+    # OpenAI
     # --------------------------------------------------------
+
+    print(
+        "Calling OpenAI..."
+    )
 
     reply = await generate_reply(
         guest_name=guest_name,
         property_data=property_data,
         authorized=authorized,
-        conversation_history=conversation_history,
+        history=history,
         style_examples=style_examples,
     )
 
+    print(
+        "OpenAI response generated successfully."
+    )
+
     # --------------------------------------------------------
-    # ENVOI
+    # Send / test
     # --------------------------------------------------------
 
     await send_reply(
@@ -1840,18 +2512,22 @@ async def process_message(
 
 
 # ============================================================
-# DEBOUNCE / GROUPAGE DES MESSAGES
+# DEBOUNCE
 # ============================================================
+
+pending_payloads: Dict[
+    str,
+    List[Dict[str, Any]],
+] = {}
 
 pending_tasks: Dict[
     str,
-    asyncio.Task
+    asyncio.Task,
 ] = {}
 
 
 async def delayed_process(
     conversation_id: str,
-    payload: Dict[str, Any],
 ):
 
     current_task = asyncio.current_task()
@@ -1860,7 +2536,7 @@ async def delayed_process(
 
         print(
             f"Waiting {DEBOUNCE_SECONDS}s "
-            f"before processing conversation "
+            f"before processing "
             f"{conversation_id}"
         )
 
@@ -1868,14 +2544,28 @@ async def delayed_process(
             DEBOUNCE_SECONDS
         )
 
-        await process_message(
-            payload
+        payloads = pending_payloads.pop(
+            conversation_id,
+            [],
+        )
+
+        if not payloads:
+
+            print(
+                "No pending payloads."
+            )
+
+            return
+
+        await process_messages(
+            conversation_id,
+            payloads,
         )
 
     except asyncio.CancelledError:
 
         print(
-            f"Debounce cancelled for "
+            f"Debounce reset for "
             f"{conversation_id}"
         )
 
@@ -1884,7 +2574,8 @@ async def delayed_process(
     except Exception as exc:
 
         print(
-            f"ERROR delayed_process: {exc}"
+            f"ERROR delayed_process: "
+            f"{exc}"
         )
 
     finally:
@@ -1906,6 +2597,18 @@ def schedule_message(
     payload: Dict[str, Any],
 ):
 
+    if conversation_id not in pending_payloads:
+
+        pending_payloads[
+            conversation_id
+        ] = []
+
+    pending_payloads[
+        conversation_id
+    ].append(
+        payload
+    )
+
     existing = pending_tasks.get(
         conversation_id
     )
@@ -1914,16 +2617,13 @@ def schedule_message(
 
         existing.cancel()
 
-    task = asyncio.create_task(
-        delayed_process(
-            conversation_id,
-            payload,
-        )
-    )
-
     pending_tasks[
         conversation_id
-    ] = task
+    ] = asyncio.create_task(
+        delayed_process(
+            conversation_id
+        )
+    )
 
 
 # ============================================================
@@ -1932,32 +2632,70 @@ def schedule_message(
 
 @app.post("/guesty/webhook")
 async def guesty_webhook(
-    request: Request
+    request: Request,
 ):
 
     try:
+        raw_body = await request.body()
 
-        payload = await request.json()
+        if GUESTY_WEBHOOK_SECRET:
+            if Webhook is None:
+                print("ERROR: svix package missing; webhook rejected")
+                return JSONResponse(
+                    status_code=503,
+                    content={"ok": False, "error": "Webhook verifier unavailable"},
+                )
+            try:
+                verified = Webhook(GUESTY_WEBHOOK_SECRET).verify(
+                    raw_body,
+                    dict(request.headers),
+                )
+                payload = verified if isinstance(verified, dict) else json.loads(raw_body)
+            except Exception as exc:
+                print(f"Invalid Guesty webhook signature: {exc}")
+                return JSONResponse(
+                    status_code=401,
+                    content={"ok": False, "error": "Invalid webhook signature"},
+                )
+        else:
+            if not TEST_MODE:
+                print("ERROR: GUESTY_WEBHOOK_SECRET missing in production")
+                return JSONResponse(
+                    status_code=503,
+                    content={"ok": False, "error": "Webhook secret missing"},
+                )
+            payload = json.loads(raw_body)
 
     except Exception:
-
-        return {
-            "ok": False,
-            "error": "Invalid JSON",
-        }
+        return JSONResponse(
+            status_code=400,
+            content={"ok": False, "error": "Invalid JSON"},
+        )
 
     print("")
-    print("==============================")
-    print("Incoming Guesty webhook")
-    print("==============================")
-
     print(
-        f"Event: {payload.get('event')}"
+        "================================"
+    )
+    print(
+        "Incoming Guesty webhook"
+    )
+    print(
+        "================================"
     )
 
-    event = payload.get("event")
+    event = payload.get(
+        "event"
+    )
+
+    print(
+        f"Event: {event}"
+    )
 
     if event != "reservation.messageReceived":
+
+        print(
+            "Event ignored."
+        )
 
         return {
             "ok": True,
@@ -1967,7 +2705,7 @@ async def guesty_webhook(
     cleanup_processed_events()
 
     # --------------------------------------------------------
-    # DÉDUPLICATION
+    # Dedup
     # --------------------------------------------------------
 
     event_key = make_event_key(
@@ -1977,7 +2715,7 @@ async def guesty_webhook(
     if event_key in processed_events:
 
         print(
-            "Duplicate webhook ignored"
+            "Duplicate webhook ignored."
         )
 
         return {
@@ -1990,7 +2728,7 @@ async def guesty_webhook(
     ] = time.time()
 
     # --------------------------------------------------------
-    # CONVERSATION
+    # Conversation ID
     # --------------------------------------------------------
 
     conversation_id = extract_conversation_id(
@@ -1999,18 +2737,80 @@ async def guesty_webhook(
 
     if not conversation_id:
 
-        print(
-            "No conversation ID in webhook"
-        )
+        print("NO CONVERSATION ID IN WEBHOOK - trying reservation fallback")
 
-        return {
-            "ok": True,
-            "ignored": True,
-            "reason": "no_conversation_id",
-        }
+        reservation_id = extract_reservation_id(payload)
+        conversation_id = await recover_conversation_id_from_reservation(reservation_id)
+
+        if conversation_id:
+            print(f"Conversation ID recovered from reservation: {conversation_id}")
+        else:
+            print("Reservation fallback unavailable - trying inquiry recovery")
+            conversation_id = await recover_conversation_id_from_inquiry(payload)
+
+        if not conversation_id:
+            print(
+                "Could not recover conversation ID safely. Webhook keys: "
+                f"{list(payload.keys())}"
+            )
+            return {
+                "ok": True,
+                "ignored": True,
+                "reason": "no_conversation_id_safe_match",
+            }
+
+        print(f"Conversation ID safely recovered: {conversation_id}")
+
+    print(
+        f"Conversation ID: "
+        f"{conversation_id}"
+    )
 
     # --------------------------------------------------------
-    # PLANIFICATION
+    # Log SAFE du message
+    # --------------------------------------------------------
+
+    message = payload.get(
+        "message"
+    )
+
+    if isinstance(
+        message,
+        dict,
+    ):
+
+        print(
+            "Webhook message keys: "
+            f"{list(message.keys())}"
+        )
+
+        webhook_body = post_text(
+            message
+        )
+
+        if webhook_body:
+
+            print(
+                f"Webhook guest message: "
+                f"{webhook_body}"
+            )
+
+    conversation = payload.get(
+        "conversation"
+    )
+
+    if isinstance(
+        conversation,
+        dict,
+    ):
+
+        print(
+            "Webhook conversation keys: "
+            f"{list(conversation.keys())}"
+        )
+
+    # --------------------------------------------------------
+    # Debounce
     # --------------------------------------------------------
 
     schedule_message(
@@ -2039,11 +2839,16 @@ async def health():
 
         "openai_model": OPENAI_MODEL,
 
+        "webhook_signature_validation":
+            bool(GUESTY_WEBHOOK_SECRET),
+
         "properties": len(PROPERTIES),
 
-        "debounce_seconds": DEBOUNCE_SECONDS,
+        "debounce_seconds":
+            DEBOUNCE_SECONDS,
 
-        "openai_timeout_seconds": 30,
+        "openai_timeout_seconds":
+            30,
     }
 
 
@@ -2052,13 +2857,14 @@ async def root():
 
     return {
 
-        "message": "Airbnb AI Agent is running",
+        "message":
+            "Airbnb AI Agent is running",
 
-        "test_mode": TEST_MODE,
+        "test_mode":
+            TEST_MODE,
 
-        "properties": list(
-            PROPERTIES.keys()
-        ),
+        "properties":
+            list(PROPERTIES.keys()),
     }
 
 
@@ -2071,10 +2877,10 @@ async def setup_webhook():
 
     return {
 
-        "message": (
+        "message":
             "Webhook already configured. "
-            "Do not create another one."
-        ),
+            "Do not create another one.",
 
-        "event": "reservation.messageReceived",
+        "event":
+            "reservation.messageReceived",
     }
