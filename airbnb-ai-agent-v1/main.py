@@ -40,8 +40,8 @@ DEBOUNCE_SECONDS = 15
 
 CONVERSATION_POST_LIMIT = 30
 
-STYLE_CONVERSATION_LIMIT = 6
-STYLE_POSTS_PER_CONVERSATION = 10
+STYLE_CONVERSATION_LIMIT = 12
+STYLE_POSTS_PER_CONVERSATION = 20
 STYLE_CACHE_TTL = 1800
 
 PROCESSED_EVENT_TTL = 3600
@@ -176,20 +176,22 @@ NE JAMAIS INVENTER une information.
 Si une information n'est pas connue :
 dis naturellement que tu vas vérifier auprès du manager.
 
-INTELLIGENCE :
-Ne réponds pas mécaniquement.
+INTELLIGENCE ET CONCISION :
+Ne réponds jamais mécaniquement et ne récite pas les règles du logement.
+Avant de répondre, raisonne silencieusement avec l'heure locale actuelle, les dates du séjour, l'historique et les informations connues.
+Si la réponse se déduit avec certitude, réponds directement sans expliquer le raisonnement.
+Une question simple appelle généralement une réponse simple.
+N'ajoute pas d'information, de condition, de conseil ou de rappel qui n'aide pas réellement le voyageur.
+Ne mentionne pas le manager quand la réponse peut être déduite avec certitude.
 
-Exemple :
+Exemple : s'il est 17h, que le check-in commence à 16h et que le voyageur dit « J'arrive dans une heure, c'est ok ? », réponds simplement dans le style de l'hôte, par exemple « Oui bien sûr, aucun souci :) À tout à l'heure ! ». Ne répète pas que le check-in est à 16h.
 
-Voyageur :
-"Y a-t-il un ascenseur ?"
-
-Ne réponds pas simplement :
-"Non."
-
-Réponds plutôt :
-"Il n'y a pas d'ascenseur, l'appartement est au 1er étage :)
-Si vous avez des bagages, nous pouvons bien sûr vous aider à votre arrivée."
+APPRENTISSAGE DU STYLE DE L'HÔTE :
+Les exemples intitulés EXEMPLES RÉELS DE L'HÔTE sont des réponses réellement écrites par l'hôte. Ils sont la référence prioritaire pour la manière de répondre.
+Imite leur longueur, leur naturel, leur vocabulaire, leur ponctuation, leur chaleur et leur niveau de détail.
+Quand un exemple contient la question du voyageur puis la réponse de l'hôte, apprends surtout la relation entre le type de question et la façon dont l'hôte choisit de répondre.
+Les règles de sécurité, les données LIVE et les faits du logement restent toujours prioritaires sur le style.
+N'utilise jamais un fait provenant d'un ancien exemple comme fait concernant la conversation actuelle.
 
 DEMANDES SENSIBLES :
 
@@ -1711,132 +1713,96 @@ async def get_recent_style_examples(
     property_data: Dict[str, Any],
 ) -> List[str]:
 
-    cache_key = (
-        listing_id
-        or "__global__"
-    )
-
-    cached = _style_cache.get(
-        cache_key
-    )
-
+    cache_key = listing_id or "__global__"
+    cached = _style_cache.get(cache_key)
     now = time.time()
 
-    if cached:
-
-        if (
-            now - cached["timestamp"]
-            < STYLE_CACHE_TTL
-        ):
-
-            return cached["examples"]
+    if cached and now - cached["timestamp"] < STYLE_CACHE_TTL:
+        return cached["examples"]
 
     try:
-
         params = {
             "limit": STYLE_CONVERSATION_LIMIT,
             "sort": "-createdAt",
         }
 
         if listing_id:
-
-            filters = [
-                {
-                    "field": "listing._id",
-                    "operator": "$eq",
-                    "value": listing_id,
-                }
-            ]
-
-            params["filters"] = json.dumps(
-                filters,
-                separators=(",", ":"),
-            )
+            filters = [{
+                "field": "listing._id",
+                "operator": "$eq",
+                "value": listing_id,
+            }]
+            params["filters"] = json.dumps(filters, separators=(",", ":"))
 
         payload = await guesty_request(
             "GET",
             "/communication/conversations",
             params=params,
         )
+        conversations = extract_results(payload)
+        examples: List[str] = []
 
-        conversations = extract_results(
-            payload
-        )
-
-        examples = []
-
+        # Learn only from HUMAN host replies. Pair each one with the guest
+        # message immediately before it, so the model learns not only wording
+        # but also how much detail the host uses for each kind of question.
         for conversation in conversations:
-
-            conversation_id = extract_object_id(
-                conversation
-            )
-
+            conversation_id = extract_object_id(conversation)
             if not conversation_id:
                 continue
 
-            posts = await get_conversation_posts(
-                conversation_id
-            )
+            posts = await get_conversation_posts(conversation_id)
+            previous_guest = None
 
-            for post in posts:
-
-                if not is_host_post(
-                    post
-                ):
-                    continue
-
-                if (
-                    post.get(
-                        "isAutomatic"
-                    )
-                    is True
-                ):
-                    continue
-
-                body = post_text(
-                    post
-                )
-
+            for post in posts[-STYLE_POSTS_PER_CONVERSATION:]:
+                body = post_text(post)
                 if not body:
                     continue
 
-                body = sanitize_style_example(
-                    body,
-                    property_data,
-                )
+                if is_guest_post(post):
+                    previous_guest = sanitize_style_example(body, property_data)
+                    continue
 
-                if body:
-                    examples.append(
-                        body
+                if not is_host_post(post):
+                    continue
+
+                # Never let the AI learn from its own/automatic messages.
+                if post.get("isAutomatic") is True:
+                    continue
+
+                host_body = sanitize_style_example(body, property_data)
+                if not host_body:
+                    continue
+
+                if previous_guest:
+                    example = (
+                        f"VOYAGEUR: {previous_guest}\n"
+                        f"HÔTE HUMAIN: {host_body}"
                     )
+                else:
+                    example = f"HÔTE HUMAIN: {host_body}"
 
-                if len(examples) >= 12:
+                if example not in examples:
+                    examples.append(example)
+
+                if len(examples) >= 30:
                     break
 
-            if len(examples) >= 12:
+            if len(examples) >= 30:
                 break
 
-        _style_cache[
-            cache_key
-        ] = {
+        _style_cache[cache_key] = {
             "timestamp": now,
             "examples": examples,
         }
 
         print(
-            f"Style cache refreshed "
-            f"for listing {cache_key}: "
+            f"Human style cache refreshed for listing {cache_key}: "
             f"{len(examples)} examples"
         )
-
         return examples
 
     except Exception as exc:
-
-        print(
-            f"ERROR style cache: {exc}"
-        )
-
+        print(f"ERROR style cache: {exc}")
         return []
 
 
@@ -1965,24 +1931,15 @@ async def generate_reply(
     style_context = ""
 
     if style_examples:
-
-        style_context = (
-            "\n\nSTYLE DE L'HÔTE "
-            "(uniquement pour le ton) :\n"
-        )
-
-        for example in style_examples:
-
-            style_context += (
-                f"- {example}\n"
-            )
+        style_context = "\n\nEXEMPLES RÉELS DE L'HÔTE :\n"
+        for i, example in enumerate(style_examples, 1):
+            style_context += f"\nEXEMPLE {i}:\n{example}\n"
 
         style_context += """
-Ces exemples servent uniquement à reproduire
-le ton et la façon d'écrire de l'hôte.
 
-N'utilise jamais leur contenu factuel
-pour inventer des informations sur le logement.
+Ces exemples ont été écrits par l'hôte humain.
+Utilise-les comme référence prioritaire pour le STYLE et le NIVEAU DE DÉTAIL.
+N'utilise jamais leur contenu factuel comme information sur la conversation actuelle.
 """
 
     guest_name_context = (
@@ -1991,8 +1948,15 @@ pour inventer des informations sur le logement.
         else "Prénom du voyageur inconnu"
     )
 
+    timezone_name = property_data.get("timezone", "Europe/Paris")
+    current_local_datetime = datetime.now(ZoneInfo(timezone_name))
+    current_time_context = current_local_datetime.strftime("%A %d/%m/%Y %H:%M")
+
     user_prompt = f"""
 {property_context}
+
+HEURE LOCALE ACTUELLE DU LOGEMENT :
+{current_time_context}
 
 {guest_name_context}
 
@@ -2009,7 +1973,10 @@ Réponds au dernier message du voyageur.
 Si plusieurs messages récents forment une même demande,
 réponds à tous les points en UNE SEULE réponse.
 
-Sois naturel, chaleureux, utile et concis.
+Raisonne silencieusement avec l'heure actuelle, les dates, l'historique et les règles.
+Si la réponse est évidente, réponds directement sans réciter la règle qui permet de la déduire.
+Adapte surtout ta longueur et ta façon de répondre aux EXEMPLES RÉELS DE L'HÔTE.
+Sois naturel, chaleureux, utile et aussi concis que l'hôte le serait.
 """
 
     response = await openai_client.chat.completions.create(
