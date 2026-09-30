@@ -754,6 +754,32 @@ async def recover_conversation_id_from_reservation(
     return None
 
 
+def extract_conversation_id_from_reservation(
+    reservation: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    """Conversation ID canonique exposé par Reservations V3/legacy."""
+    reservation = reservation or {}
+
+    cid = first_value(
+        reservation.get("conversationId"),
+        reservation.get("conversation_id"),
+    )
+    if cid:
+        return str(cid)
+
+    conversation = reservation.get("conversation")
+    if isinstance(conversation, dict):
+        cid = first_value(conversation.get("_id"), conversation.get("id"))
+        if cid:
+            return str(cid)
+
+    conversation_ids = reservation.get("conversationIds")
+    if isinstance(conversation_ids, list) and len(conversation_ids) == 1:
+        return str(conversation_ids[0])
+
+    return None
+
+
 def is_guest_conversation(conversation: Optional[Dict[str, Any]]) -> bool:
     if not isinstance(conversation, dict):
         return True
@@ -766,61 +792,67 @@ def is_guest_conversation(conversation: Optional[Dict[str, Any]]) -> bool:
 def extract_reservation_id(
     payload: Dict[str, Any],
 ) -> Optional[str]:
+    """
+    Extrait l'ID de réservation sans choisir arbitrairement une ancienne
+    réservation d'une conversation Guesty.
 
+    Priorité Guesty :
+    1. reservationId top-level du webhook reservation.messageReceived ;
+    2. message.reservationId quand présent ;
+    3. objet reservation embarqué ;
+    4. conversation.meta.reservations uniquement s'il n'y en a QU'UNE.
+
+    Une conversation Guesty peut contenir plusieurs réservations : dans ce cas,
+    on ne prend jamais la première au hasard.
+    """
     reservation_id = first_value(
         payload.get("reservationId"),
+        payload.get("reservation_id"),
     )
 
     if reservation_id:
         return str(reservation_id)
 
-    reservation = payload.get(
-        "reservation"
-    )
-
-    if isinstance(reservation, dict):
-
+    message = payload.get("message")
+    if isinstance(message, dict):
         reservation_id = first_value(
-            reservation.get("_id"),
-            reservation.get("id"),
+            message.get("reservationId"),
+            message.get("reservation_id"),
         )
-
         if reservation_id:
             return str(reservation_id)
 
-    conversation = payload.get(
-        "conversation"
-    )
-
-    if isinstance(conversation, dict):
-
-        meta = conversation.get(
-            "meta"
+    reservation = payload.get("reservation")
+    if isinstance(reservation, dict):
+        reservation_id = first_value(
+            reservation.get("_id"),
+            reservation.get("id"),
+            reservation.get("reservationId"),
         )
+        if reservation_id:
+            return str(reservation_id)
 
+    conversation = payload.get("conversation")
+    if isinstance(conversation, dict):
+        meta = conversation.get("meta")
         if isinstance(meta, dict):
-
-            reservations = meta.get(
-                "reservations"
-            )
-
+            reservations = meta.get("reservations")
             if isinstance(reservations, list):
-
-                for reservation in reservations:
-
-                    if not isinstance(
-                        reservation,
-                        dict,
-                    ):
+                ids = []
+                for item in reservations:
+                    if not isinstance(item, dict):
                         continue
-
-                    reservation_id = first_value(
-                        reservation.get("_id"),
-                        reservation.get("id"),
+                    rid = first_value(
+                        item.get("_id"),
+                        item.get("id"),
+                        item.get("reservationId"),
                     )
+                    if rid and str(rid) not in ids:
+                        ids.append(str(rid))
 
-                    if reservation_id:
-                        return str(reservation_id)
+                # Fail closed : une conversation peut regrouper plusieurs séjours.
+                if len(ids) == 1:
+                    return ids[0]
 
     return None
 
@@ -854,8 +886,15 @@ def collect_listing_candidates(
     payloads: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, str]]:
     """
-    Collecte uniquement des identifiants qui ressemblent réellement à des
-    Listing IDs Guesty. On n'utilise PAS unitTypeId comme fallback de logement.
+    Collecte les identifiants Guesty pouvant désigner le logement.
+
+    IMPORTANT - Reservations V3 :
+    Guesty renvoie principalement `unitTypeId` et `unitId` (et non forcément
+    `listingId`). Pour une SINGLE listing, les deux correspondent au Listing ID.
+    Pour une multi-unit, unitTypeId = parent et unitId = sous-unité.
+
+    On collecte toutes les preuves puis resolve_listing_id() n'accepte qu'un
+    seul ID qui corresponde à PROPERTIES. Aucun fallback par adresse ou nom.
     """
     reservation = reservation or {}
     conversation = conversation or {}
@@ -863,17 +902,63 @@ def collect_listing_candidates(
 
     candidates: List[Dict[str, str]] = []
 
-    # Réservation fraîche Guesty = source la plus importante.
-    _add_listing_candidate(candidates, "reservation.listingId", reservation.get("listingId"))
-    _add_listing_candidate(candidates, "reservation.listing", reservation.get("listing"))
+    def add_reservation_fields(prefix: str, obj: Dict[str, Any]):
+        # Legacy / champs explicites listing
+        _add_listing_candidate(candidates, f"{prefix}.listingId", obj.get("listingId"))
+        _add_listing_candidate(candidates, f"{prefix}.lastStayListingId", obj.get("lastStayListingId"))
+        _add_listing_candidate(candidates, f"{prefix}.listing", obj.get("listing"))
 
-    # Conversation fraîche Guesty.
+        # Reservations V3 : champs principaux documentés par Guesty.
+        _add_listing_candidate(candidates, f"{prefix}.unitTypeId", obj.get("unitTypeId"))
+        _add_listing_candidate(candidates, f"{prefix}.unitId", obj.get("unitId"))
+
+        # Certaines réponses portent les IDs dans stay[].
+        stay = obj.get("stay")
+        if isinstance(stay, list):
+            for stay_index, item in enumerate(stay):
+                if not isinstance(item, dict):
+                    continue
+                _add_listing_candidate(
+                    candidates,
+                    f"{prefix}.stay[{stay_index}].listingId",
+                    item.get("listingId"),
+                )
+                _add_listing_candidate(
+                    candidates,
+                    f"{prefix}.stay[{stay_index}].unitTypeId",
+                    item.get("unitTypeId"),
+                )
+                _add_listing_candidate(
+                    candidates,
+                    f"{prefix}.stay[{stay_index}].unitId",
+                    item.get("unitId"),
+                )
+                _add_listing_candidate(
+                    candidates,
+                    f"{prefix}.stay[{stay_index}].listing",
+                    item.get("listing"),
+                )
+
+    # Réservation fraîche Guesty = source prioritaire.
+    add_reservation_fields("reservation", reservation)
+
+    # Conversation : certains contrats/anciennes réponses peuvent exposer listing.
     _add_listing_candidate(candidates, "conversation.listingId", conversation.get("listingId"))
+    _add_listing_candidate(candidates, "conversation.lastStayListingId", conversation.get("lastStayListingId"))
+    _add_listing_candidate(candidates, "conversation.unitTypeId", conversation.get("unitTypeId"))
+    _add_listing_candidate(candidates, "conversation.unitId", conversation.get("unitId"))
     _add_listing_candidate(candidates, "conversation.listing", conversation.get("listing"))
+
+    conv_reservation = conversation.get("reservation")
+    if isinstance(conv_reservation, dict):
+        add_reservation_fields("conversation.reservation", conv_reservation)
 
     meta = conversation.get("meta")
     if isinstance(meta, dict):
         _add_listing_candidate(candidates, "conversation.meta.listingId", meta.get("listingId"))
+        _add_listing_candidate(candidates, "conversation.meta.lastStayListingId", meta.get("lastStayListingId"))
+        _add_listing_candidate(candidates, "conversation.meta.unitTypeId", meta.get("unitTypeId"))
+        _add_listing_candidate(candidates, "conversation.meta.unitId", meta.get("unitId"))
         _add_listing_candidate(candidates, "conversation.meta.listing", meta.get("listing"))
 
         reservations = meta.get("reservations")
@@ -881,15 +966,9 @@ def collect_listing_candidates(
             for index, item in enumerate(reservations):
                 if not isinstance(item, dict):
                     continue
-                _add_listing_candidate(
-                    candidates,
-                    f"conversation.meta.reservations[{index}].listingId",
-                    item.get("listingId"),
-                )
-                _add_listing_candidate(
-                    candidates,
-                    f"conversation.meta.reservations[{index}].listing",
-                    item.get("listing"),
+                add_reservation_fields(
+                    f"conversation.meta.reservations[{index}]",
+                    item,
                 )
 
     # Webhooks regroupés.
@@ -897,28 +976,17 @@ def collect_listing_candidates(
         if not isinstance(payload, dict):
             continue
 
-        _add_listing_candidate(
-            candidates,
-            f"payload[{index}].listingId",
-            payload.get("listingId"),
-        )
-        _add_listing_candidate(
-            candidates,
-            f"payload[{index}].listing",
-            payload.get("listing"),
-        )
+        _add_listing_candidate(candidates, f"payload[{index}].listingId", payload.get("listingId"))
+        _add_listing_candidate(candidates, f"payload[{index}].lastStayListingId", payload.get("lastStayListingId"))
+        _add_listing_candidate(candidates, f"payload[{index}].unitTypeId", payload.get("unitTypeId"))
+        _add_listing_candidate(candidates, f"payload[{index}].unitId", payload.get("unitId"))
+        _add_listing_candidate(candidates, f"payload[{index}].listing", payload.get("listing"))
 
         payload_reservation = payload.get("reservation")
         if isinstance(payload_reservation, dict):
-            _add_listing_candidate(
-                candidates,
-                f"payload[{index}].reservation.listingId",
-                payload_reservation.get("listingId"),
-            )
-            _add_listing_candidate(
-                candidates,
-                f"payload[{index}].reservation.listing",
-                payload_reservation.get("listing"),
+            add_reservation_fields(
+                f"payload[{index}].reservation",
+                payload_reservation,
             )
 
         payload_conversation = payload.get("conversation")
@@ -927,6 +995,21 @@ def collect_listing_candidates(
                 candidates,
                 f"payload[{index}].conversation.listingId",
                 payload_conversation.get("listingId"),
+            )
+            _add_listing_candidate(
+                candidates,
+                f"payload[{index}].conversation.lastStayListingId",
+                payload_conversation.get("lastStayListingId"),
+            )
+            _add_listing_candidate(
+                candidates,
+                f"payload[{index}].conversation.unitTypeId",
+                payload_conversation.get("unitTypeId"),
+            )
+            _add_listing_candidate(
+                candidates,
+                f"payload[{index}].conversation.unitId",
+                payload_conversation.get("unitId"),
             )
             _add_listing_candidate(
                 candidates,
@@ -940,6 +1023,21 @@ def collect_listing_candidates(
                     candidates,
                     f"payload[{index}].conversation.meta.listingId",
                     payload_meta.get("listingId"),
+                )
+                _add_listing_candidate(
+                    candidates,
+                    f"payload[{index}].conversation.meta.lastStayListingId",
+                    payload_meta.get("lastStayListingId"),
+                )
+                _add_listing_candidate(
+                    candidates,
+                    f"payload[{index}].conversation.meta.unitTypeId",
+                    payload_meta.get("unitTypeId"),
+                )
+                _add_listing_candidate(
+                    candidates,
+                    f"payload[{index}].conversation.meta.unitId",
+                    payload_meta.get("unitId"),
                 )
                 _add_listing_candidate(
                     candidates,
@@ -3030,6 +3128,49 @@ async def process_messages(
                 "reservation could not be retrieved safely"
             )
             return
+
+        # Reservations V3 expose principalement unitTypeId / unitId.
+        # Ces logs ne contiennent aucune donnée voyageur et permettent de
+        # vérifier immédiatement quel logement Guesty est rattaché au séjour.
+        print(
+            "Reservation property IDs: "
+            f"unitTypeId={reservation.get('unitTypeId')} | "
+            f"unitId={reservation.get('unitId')} | "
+            f"lastStayListingId={reservation.get('lastStayListingId')} | "
+            f"listingId={reservation.get('listingId')}"
+        )
+
+        # Best practice Guesty : une fois la réservation récupérée, son
+        # conversationId devient la référence pour aller chercher les messages.
+        canonical_conversation_id = extract_conversation_id_from_reservation(
+            reservation
+        )
+
+        if canonical_conversation_id:
+            if canonical_conversation_id != conversation_id:
+                print(
+                    "Using reservation conversationId from Guesty: "
+                    f"{canonical_conversation_id}"
+                )
+                conversation_id = canonical_conversation_id
+
+            canonical_conversation = await get_conversation(
+                conversation_id
+            )
+
+            if not canonical_conversation:
+                print(
+                    "BLOCKED - reservation conversation could not be retrieved"
+                )
+                return
+
+            conversation = canonical_conversation
+
+            if not is_guest_conversation(conversation):
+                print(
+                    "Non-guest / owner conversation - skipping"
+                )
+                return
 
     else:
         print(
