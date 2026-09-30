@@ -68,21 +68,27 @@ app = FastAPI(title="Airbnb AI Agent")
 # PROPERTIES
 # ============================================================
 
+# IMPORTANT:
+# - La clé du dictionnaire = Guesty Listing ID exact.
+# - Le nom sert uniquement de libellé humain.
+# - L'adresse ne sert JAMAIS à identifier un logement.
+# - Si un logement n'est pas configuré ici, l'agent ne répond pas.
+#
+# CAIRE1 est volontairement configuré avec uniquement les informations
+# certaines que nous avons aujourd'hui. Complète les champs None avant
+# d'autoriser l'agent à répondre à des questions spécifiques sur ce logement.
+
 PROPERTIES = {
-
     "6a908557b01e820012493069": {
-
-        "name": "31 rue du Caire",
-
+        "name": "!RUE31",
+        "guesty_name": "!RUE31",
         "address": "31 rue du Caire, 75002 Paris",
-
         "timezone": "Europe/Paris",
 
         "check_in_time": "16:00",
         "check_out_time": "10:00",
 
         "floor": "1er étage",
-
         "elevator": False,
 
         "bedrooms": 2,
@@ -90,14 +96,12 @@ PROPERTIES = {
         "wc": 1,
 
         "fully_equipped_kitchen": True,
-
         "air_conditioning": True,
 
-        # INFORMATIONS SENSIBLES
+        # Informations sensibles propres à !RUE31
+        "sensitive_access_enabled": True,
         "building_code": "7531",
-
         "keybox_code": "C2613",
-
         "access_route": (
             "Entrer dans l'immeuble avec le code 7531, "
             "traverser la petite cour, "
@@ -105,24 +109,55 @@ PROPERTIES = {
             "monter au 1er étage, "
             "l'appartement est la porte à gauche de l'escalier."
         ),
-
         "keybox_location": (
             "La boîte à clés se trouve à l'entrée de l'immeuble, "
             "au niveau des boîtes aux lettres."
         ),
-
         "video_url": (
             "https://drive.google.com/file/d/"
             "1gU5f_pxW13dfYrboP7Vz86q_3yWPwN3G/view?usp=sharing"
         ),
-
         "arrival_guide": (
             "Toutes les instructions sont disponibles "
             "sur le guide d'arrivée sur Airbnb."
         ),
-    }
-}
+    },
 
+    "6ab462d882922b001271fe81": {
+        "name": "CAIRE1",
+        "guesty_name": "CAIRE1",
+        "address": "31 rue du Caire, 75002 Paris",
+        "timezone": "Europe/Paris",
+
+        # A COMPLETER avec les vraies informations de CAIRE1.
+        # Tant que ces champs sont None, l'IA dira qu'elle va vérifier
+        # plutôt que d'inventer ou de reprendre les données de !RUE31.
+        "check_in_time": None,
+        "check_out_time": None,
+
+        "floor": None,
+        "elevator": None,
+
+        "bedrooms": None,
+        "bathrooms": None,
+        "wc": None,
+
+        "fully_equipped_kitchen": None,
+        "air_conditioning": None,
+
+        # Surtout ne jamais réutiliser les codes de !RUE31.
+        "sensitive_access_enabled": False,
+        "building_code": None,
+        "keybox_code": None,
+        "access_route": None,
+        "keybox_location": None,
+        "video_url": None,
+        "arrival_guide": (
+            "Toutes les instructions d'arrivée disponibles doivent être "
+            "prises depuis les informations propres à cette réservation."
+        ),
+    },
+}
 
 # ============================================================
 # SYSTEM PROMPT
@@ -131,9 +166,33 @@ PROPERTIES = {
 SYSTEM_RULES = """
 Tu es l'assistant Airbnb d'un hôte.
 
-TON OBJECTIF :
+OBJECTIF :
 Répondre aux voyageurs comme un vrai hôte humain :
 naturellement, chaleureusement, intelligemment et de manière concise.
+
+SOURCE DE VÉRITÉ :
+Le serveur te fournit un bloc CONTEXTE GUESTY VÉRIFIÉ.
+Il contient l'identité technique du logement, le type de conversation,
+le statut de réservation, les dates de séjour connues et, quand nécessaire,
+le résultat du calendrier Guesty.
+
+Tu dois toujours considérer ce contexte serveur comme prioritaire.
+
+RÈGLES MULTI-LOGEMENTS :
+- Ne déduis JAMAIS le logement à partir de l'adresse, du texte du voyageur ou d'un ancien exemple.
+- Plusieurs logements peuvent avoir exactement la même adresse.
+- Le logement courant a déjà été sélectionné côté serveur par son Guesty Listing ID.
+- N'utilise que les informations du LOGEMENT COURANT fourni.
+- Ne mélange jamais les équipements, horaires, codes ou instructions de deux logements.
+- Ne révèle jamais au voyageur les IDs techniques Guesty.
+
+DATES / RÉSERVATION :
+- Si le contexte indique une réservation Guesty, les dates de check-in et check-out fournies par Guesty font foi.
+- Ne réinterprète pas ces dates à partir de la conversation.
+- Si le voyageur parle d'une NOUVELLE période ou demande une disponibilité différente,
+  utilise uniquement le bloc CALENDRIER LIVE correspondant à cette demande.
+- Une réservation confirmée ne doit pas être "revalidée" à partir du calendrier :
+  sa propre réservation peut naturellement bloquer ces dates dans le calendrier.
 
 STYLE :
 - Réponds dans la langue du voyageur.
@@ -160,7 +219,7 @@ Une personne qui n'a pas encore réservé doit quand même recevoir une réponse
 L'absence de réservation n'est PAS une raison pour ignorer le message.
 
 Tu peux répondre aux questions générales concernant :
-- l'appartement
+- le logement
 - l'étage
 - l'ascenseur
 - les chambres
@@ -170,31 +229,33 @@ Tu peux répondre aux questions générales concernant :
 - les équipements connus
 - le check-in
 - le check-out
+- les disponibilités, uniquement si le calendrier Guesty a été vérifié pour les dates demandées
 
 NE JAMAIS INVENTER une information.
 
-Si une information n'est pas connue :
+Si une information du logement courant est indiquée comme inconnue :
 dis naturellement que tu vas vérifier auprès du manager.
+Ne reprends jamais une information d'un autre logement.
 
 INTELLIGENCE ET CONCISION :
 Ne réponds jamais mécaniquement et ne récite pas les règles du logement.
-Avant de répondre, raisonne silencieusement avec l'heure locale actuelle, les dates du séjour, l'historique et les informations connues.
+Avant de répondre, raisonne silencieusement avec l'heure locale actuelle,
+les dates Guesty, l'historique, le logement courant et les informations connues.
 Si la réponse se déduit avec certitude, réponds directement sans expliquer le raisonnement.
 Une question simple appelle généralement une réponse simple.
 N'ajoute pas d'information, de condition, de conseil ou de rappel qui n'aide pas réellement le voyageur.
 Ne mentionne pas le manager quand la réponse peut être déduite avec certitude.
 
-Exemple : s'il est 17h, que le check-in commence à 16h et que le voyageur dit « J'arrive dans une heure, c'est ok ? », réponds simplement dans le style de l'hôte, par exemple « Oui bien sûr, aucun souci :) À tout à l'heure ! ». Ne répète pas que le check-in est à 16h.
-
 APPRENTISSAGE DU STYLE DE L'HÔTE :
-Les exemples intitulés EXEMPLES RÉELS DE L'HÔTE sont des réponses réellement écrites par l'hôte. Ils sont la référence prioritaire pour la manière de répondre.
+Les exemples intitulés EXEMPLES RÉELS DE L'HÔTE sont des réponses réellement écrites par l'hôte.
+Ils sont la référence prioritaire pour la manière de répondre.
 Imite leur longueur, leur naturel, leur vocabulaire, leur ponctuation, leur chaleur et leur niveau de détail.
-Quand un exemple contient la question du voyageur puis la réponse de l'hôte, apprends surtout la relation entre le type de question et la façon dont l'hôte choisit de répondre.
-Les règles de sécurité, les données LIVE et les faits du logement restent toujours prioritaires sur le style.
+Quand un exemple contient la question du voyageur puis la réponse de l'hôte,
+apprends surtout la relation entre le type de question et la façon dont l'hôte choisit de répondre.
+Les règles de sécurité, le CONTEXTE GUESTY VÉRIFIÉ et les faits du logement restent toujours prioritaires.
 N'utilise jamais un fait provenant d'un ancien exemple comme fait concernant la conversation actuelle.
 
 DEMANDES SENSIBLES :
-
 Pour :
 - remboursement
 - annulation exceptionnelle
@@ -208,27 +269,22 @@ Pour :
 - urgence médicale
 
 ne prends aucune décision toi-même.
-
 Réponds naturellement que tu vas voir cela avec le manager.
 
 ACCÈS SENSIBLE :
-
 Les codes d'accès et informations détaillées d'accès sont confidentiels.
 
 Ils ne doivent être utilisés que si le serveur indique explicitement :
-
 SENSITIVE_ACCESS_AUTHORIZED = TRUE
 
 Sinon :
 - ne donne aucun code ;
 - ne donne pas le lien vidéo ;
 - ne donne pas le chemin détaillé ;
-- tu peux dire que l'appartement est au 1er étage ;
-- tu peux dire qu'il n'y a pas d'ascenseur ;
-- indique que toutes les instructions sont disponibles sur le guide d'arrivée Airbnb.
+- ne donne pas une information sensible récupérée dans un ancien message ;
+- utilise seulement les informations non sensibles du logement courant.
 
 VIDÉO :
-
 Ne donne PAS automatiquement la vidéo.
 
 Tu peux donner la vidéo uniquement si :
@@ -239,22 +295,18 @@ Tu peux donner la vidéo uniquement si :
 - il ne trouve pas l'appartement ;
 - il ne comprend pas les instructions d'accès.
 
-Et uniquement si SENSITIVE_ACCESS_AUTHORIZED = TRUE.
+Et uniquement si SENSITIVE_ACCESS_AUTHORIZED = TRUE et si une vidéo propre au logement courant existe.
 
 DISPONIBILITÉS / CALENDRIER :
-- Quand le contexte CALENDRIER LIVE est fourni, il vient directement de Guesty et fait foi pour les dates demandées.
-- Si CALENDRIER LIVE indique DISPONIBLE, tu peux confirmer naturellement la disponibilité.
-- Si CALENDRIER LIVE indique INDISPONIBLE, dis simplement que le logement n’est pas disponible sur toute la période demandée.
-- N’invente jamais une disponibilité.
-- Si le voyageur demande si le logement est disponible sans donner de dates précises, demande-lui ses dates d’arrivée et de départ.
-- Ne révèle jamais les détails internes des blocs calendrier, IDs de réservation, noms d’autres voyageurs ou informations privées.
-- Une disponibilité constatée n’est pas une promesse de réservation : précise seulement qu’elle est disponible au moment de la vérification si cela est utile.
-
-CHECK-IN :
-À partir de 16h.
-
-CHECK-OUT :
-10h.
+- Le bloc CALENDRIER LIVE vient directement du Listing ID Guesty du logement courant.
+- Si le bloc indique DISPONIBLE, tu peux confirmer naturellement la disponibilité.
+- Si le bloc indique INDISPONIBLE, dis simplement que le logement n'est pas disponible sur toute la période demandée.
+- Si la vérification est incomplète ou impossible, ne confirme aucune disponibilité.
+- Si le voyageur demande une disponibilité sans dates suffisantes, demande les dates manquantes.
+- Si aucune demande de disponibilité n'a été détectée, ne parle pas spontanément du calendrier.
+- Ne révèle jamais les détails internes des blocs calendrier, IDs de réservation,
+  IDs de listing, noms d'autres voyageurs ou informations privées.
+- Une disponibilité constatée n'est pas une promesse de réservation.
 
 IMPORTANT :
 Une réponse doit toujours répondre au dernier message du voyageur.
@@ -268,7 +320,6 @@ Pas d'analyse.
 Pas d'explication.
 Pas de commentaire interne.
 """
-
 
 # ============================================================
 # GUESTY TOKEN
@@ -774,73 +825,355 @@ def extract_reservation_id(
     return None
 
 
-def extract_listing_id(
+def _add_listing_candidate(
+    candidates: List[Dict[str, str]],
+    source: str,
+    value: Any,
+):
+    if value in (None, "", [], {}):
+        return
+
+    if isinstance(value, dict):
+        value = first_value(
+            value.get("_id"),
+            value.get("id"),
+        )
+
+    if value in (None, ""):
+        return
+
+    candidates.append({
+        "source": source,
+        "value": str(value),
+    })
+
+
+def collect_listing_candidates(
     reservation: Optional[Dict[str, Any]],
     conversation: Optional[Dict[str, Any]],
-    payload: Optional[Dict[str, Any]] = None,
-) -> Optional[str]:
-
+    payloads: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, str]]:
+    """
+    Collecte uniquement des identifiants qui ressemblent réellement à des
+    Listing IDs Guesty. On n'utilise PAS unitTypeId comme fallback de logement.
+    """
     reservation = reservation or {}
     conversation = conversation or {}
-    payload = payload or {}
+    payloads = payloads or []
 
-    candidates = [
+    candidates: List[Dict[str, str]] = []
 
-        payload.get("listingId"),
+    # Réservation fraîche Guesty = source la plus importante.
+    _add_listing_candidate(candidates, "reservation.listingId", reservation.get("listingId"))
+    _add_listing_candidate(candidates, "reservation.listing", reservation.get("listing"))
 
-        payload.get("listing", {}).get("_id")
-        if isinstance(
+    # Conversation fraîche Guesty.
+    _add_listing_candidate(candidates, "conversation.listingId", conversation.get("listingId"))
+    _add_listing_candidate(candidates, "conversation.listing", conversation.get("listing"))
+
+    meta = conversation.get("meta")
+    if isinstance(meta, dict):
+        _add_listing_candidate(candidates, "conversation.meta.listingId", meta.get("listingId"))
+        _add_listing_candidate(candidates, "conversation.meta.listing", meta.get("listing"))
+
+        reservations = meta.get("reservations")
+        if isinstance(reservations, list):
+            for index, item in enumerate(reservations):
+                if not isinstance(item, dict):
+                    continue
+                _add_listing_candidate(
+                    candidates,
+                    f"conversation.meta.reservations[{index}].listingId",
+                    item.get("listingId"),
+                )
+                _add_listing_candidate(
+                    candidates,
+                    f"conversation.meta.reservations[{index}].listing",
+                    item.get("listing"),
+                )
+
+    # Webhooks regroupés.
+    for index, payload in enumerate(payloads):
+        if not isinstance(payload, dict):
+            continue
+
+        _add_listing_candidate(
+            candidates,
+            f"payload[{index}].listingId",
+            payload.get("listingId"),
+        )
+        _add_listing_candidate(
+            candidates,
+            f"payload[{index}].listing",
             payload.get("listing"),
-            dict,
         )
-        else None,
 
-        reservation.get("listingId"),
+        payload_reservation = payload.get("reservation")
+        if isinstance(payload_reservation, dict):
+            _add_listing_candidate(
+                candidates,
+                f"payload[{index}].reservation.listingId",
+                payload_reservation.get("listingId"),
+            )
+            _add_listing_candidate(
+                candidates,
+                f"payload[{index}].reservation.listing",
+                payload_reservation.get("listing"),
+            )
 
-        reservation.get("lastStayListingId"),
+        payload_conversation = payload.get("conversation")
+        if isinstance(payload_conversation, dict):
+            _add_listing_candidate(
+                candidates,
+                f"payload[{index}].conversation.listingId",
+                payload_conversation.get("listingId"),
+            )
+            _add_listing_candidate(
+                candidates,
+                f"payload[{index}].conversation.listing",
+                payload_conversation.get("listing"),
+            )
 
-        reservation.get("unitId"),
+            payload_meta = payload_conversation.get("meta")
+            if isinstance(payload_meta, dict):
+                _add_listing_candidate(
+                    candidates,
+                    f"payload[{index}].conversation.meta.listingId",
+                    payload_meta.get("listingId"),
+                )
+                _add_listing_candidate(
+                    candidates,
+                    f"payload[{index}].conversation.meta.listing",
+                    payload_meta.get("listing"),
+                )
 
-        reservation.get("unitTypeId"),
-
-        reservation.get("listing", {}).get("_id")
-        if isinstance(
-            reservation.get("listing"),
-            dict,
-        )
-        else None,
-
-        conversation.get("listingId"),
-
-        conversation.get("lastStayListingId"),
-
-        conversation.get("unitId"),
-
-        conversation.get("unitTypeId"),
-
-        conversation.get("listing", {}).get("_id")
-        if isinstance(
-            conversation.get("listing"),
-            dict,
-        )
-        else None,
-    ]
+    # Déduplication tout en gardant les sources pour les logs.
+    unique: List[Dict[str, str]] = []
+    seen = set()
 
     for candidate in candidates:
+        key = (candidate["source"], candidate["value"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
 
-        if candidate:
-            return str(candidate)
+    return unique
 
-    # UNE SEULE propriété :
-    # fallback sûr pour les inquiries.
-    if len(PROPERTIES) == 1:
 
-        return next(
-            iter(PROPERTIES.keys())
-        )
+def resolve_listing_id(
+    reservation: Optional[Dict[str, Any]],
+    conversation: Optional[Dict[str, Any]],
+    payloads: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """
+    Fail closed:
+    - exactement un Listing ID configuré détecté => OK ;
+    - plusieurs Listing IDs configurés détectés => conflit, aucune réponse ;
+    - aucun Listing ID configuré => aucune réponse.
+
+    L'adresse n'est jamais utilisée.
+    """
+    evidence = collect_listing_candidates(
+        reservation=reservation,
+        conversation=conversation,
+        payloads=payloads,
+    )
+
+    configured_ids = []
+    for item in evidence:
+        value = item["value"]
+        if value in PROPERTIES and value not in configured_ids:
+            configured_ids.append(value)
+
+    if len(configured_ids) == 1:
+        listing_id = configured_ids[0]
+        return {
+            "ok": True,
+            "listing_id": listing_id,
+            "property_data": PROPERTIES[listing_id],
+            "evidence": evidence,
+            "reason": None,
+        }
+
+    if len(configured_ids) > 1:
+        return {
+            "ok": False,
+            "listing_id": None,
+            "property_data": None,
+            "evidence": evidence,
+            "reason": "conflicting_configured_listing_ids",
+        }
+
+    raw_ids = []
+    for item in evidence:
+        value = item["value"]
+        if value not in raw_ids:
+            raw_ids.append(value)
+
+    return {
+        "ok": False,
+        "listing_id": None,
+        "property_data": None,
+        "evidence": evidence,
+        "reason": (
+            "unknown_listing_id"
+            if raw_ids
+            else "listing_id_not_found"
+        ),
+    }
+
+
+def extract_date_iso(
+    value: Any,
+    timezone_name: str,
+) -> Optional[str]:
+    if not value:
+        return None
+
+    if isinstance(value, datetime):
+        return localize_datetime(
+            value,
+            timezone_name,
+        ).date().isoformat()
+
+    if isinstance(value, date):
+        return value.isoformat()
+
+    text = str(value).strip()
+
+    if not text:
+        return None
+
+    try:
+        # Les champs Guesty "Localized" sont souvent YYYY-MM-DD.
+        return date.fromisoformat(text[:10]).isoformat()
+    except Exception:
+        pass
+
+    dt = parse_datetime(text)
+
+    if dt:
+        return localize_datetime(
+            dt,
+            timezone_name,
+        ).date().isoformat()
 
     return None
 
+
+def extract_reservation_stay(
+    reservation: Optional[Dict[str, Any]],
+    timezone_name: str,
+) -> Dict[str, Optional[str]]:
+    reservation = reservation or {}
+
+    check_in = None
+    check_out = None
+
+    for key in (
+        "checkInDateLocalized",
+        "checkinDateLocalized",
+        "checkInDate",
+        "checkIn",
+        "checkin",
+        "arrivalDate",
+    ):
+        check_in = extract_date_iso(
+            reservation.get(key),
+            timezone_name,
+        )
+        if check_in:
+            break
+
+    for key in (
+        "checkOutDateLocalized",
+        "checkoutDateLocalized",
+        "checkOutDate",
+        "checkOut",
+        "checkout",
+        "departureDate",
+    ):
+        check_out = extract_date_iso(
+            reservation.get(key),
+            timezone_name,
+        )
+        if check_out:
+            break
+
+    if check_in and check_out:
+        try:
+            if date.fromisoformat(check_out) <= date.fromisoformat(check_in):
+                print("Invalid reservation stay dates - ignoring")
+                check_in = None
+                check_out = None
+        except Exception:
+            check_in = None
+            check_out = None
+
+    return {
+        "check_in": check_in,
+        "check_out": check_out,
+    }
+
+
+def build_booking_context(
+    conversation_id: str,
+    listing_id: str,
+    property_data: Dict[str, Any],
+    reservation_id: Optional[str],
+    reservation: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    timezone_name = property_data.get(
+        "timezone",
+        "Europe/Paris",
+    )
+
+    stay = extract_reservation_stay(
+        reservation,
+        timezone_name,
+    )
+
+    status = None
+    if reservation:
+        raw_status = reservation.get("status")
+        if raw_status not in (None, ""):
+            status = str(raw_status).strip().lower()
+
+    if reservation:
+        if status in ("confirmed", "reserved"):
+            conversation_type = "CONFIRMED_RESERVATION"
+        else:
+            conversation_type = "RESERVATION_OTHER_STATUS"
+    else:
+        conversation_type = "INQUIRY"
+
+    return {
+        "conversation_id": conversation_id,
+        "conversation_type": conversation_type,
+        "listing_id": listing_id,
+        "property_name": property_data.get("name"),
+        "reservation_id": reservation_id,
+        "reservation_status": status,
+        "reservation_check_in": stay.get("check_in"),
+        "reservation_check_out": stay.get("check_out"),
+    }
+
+
+def booking_context_to_prompt(
+    booking_context: Dict[str, Any],
+) -> str:
+    return (
+        "CONTEXTE GUESTY VÉRIFIÉ :\n"
+        f"TYPE_CONVERSATION = {booking_context.get('conversation_type')}\n"
+        f"LOGEMENT = {booking_context.get('property_name')}\n"
+        f"LISTING_ID_INTERNE = {booking_context.get('listing_id')}\n"
+        f"RESERVATION_ID_INTERNE = {booking_context.get('reservation_id') or 'AUCUNE'}\n"
+        f"RESERVATION_STATUS = {booking_context.get('reservation_status') or 'AUCUN'}\n"
+        f"RESERVATION_CHECK_IN = {booking_context.get('reservation_check_in') or 'INCONNU'}\n"
+        f"RESERVATION_CHECK_OUT = {booking_context.get('reservation_check_out') or 'INCONNU'}\n"
+        "Les IDs sont internes et ne doivent jamais être révélés au voyageur."
+    )
 
 # ============================================================
 # GUEST NAME
@@ -1156,7 +1489,6 @@ def parse_datetime(
         value,
         date,
     ):
-
         return datetime.combine(
             value,
             dt_time.min,
@@ -1165,7 +1497,6 @@ def parse_datetime(
     text = str(value).strip()
 
     try:
-
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"
 
@@ -1174,7 +1505,6 @@ def parse_datetime(
         )
 
     except Exception:
-
         return None
 
 
@@ -1188,12 +1518,39 @@ def localize_datetime(
     )
 
     if value.tzinfo is None:
-
         return value.replace(
             tzinfo=tz
         )
 
     return value.astimezone(tz)
+
+
+def parse_hhmm(
+    value: Any,
+) -> Optional[tuple[int, int]]:
+    if not value:
+        return None
+
+    text = str(value).strip()
+
+    match = re.fullmatch(
+        r"(\d{1,2}):(\d{2})",
+        text,
+    )
+
+    if not match:
+        return None
+
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+
+    if not (
+        0 <= hour <= 23
+        and 0 <= minute <= 59
+    ):
+        return None
+
+    return hour, minute
 
 
 def make_local_date_time(
@@ -1211,12 +1568,10 @@ def make_local_date_time(
     )
 
     try:
-
         if isinstance(
             value,
             datetime,
         ):
-
             dt = localize_datetime(
                 value,
                 timezone_name,
@@ -1233,7 +1588,6 @@ def make_local_date_time(
             value,
             date,
         ):
-
             return datetime.combine(
                 value,
                 dt_time(
@@ -1246,13 +1600,11 @@ def make_local_date_time(
         text = str(value).strip()
 
         if "T" in text:
-
             dt = parse_datetime(
                 text
             )
 
             if dt:
-
                 dt = localize_datetime(
                     dt,
                     timezone_name,
@@ -1279,7 +1631,6 @@ def make_local_date_time(
         )
 
     except Exception:
-
         return None
 
 
@@ -1288,12 +1639,21 @@ def access_is_authorized(
     property_data: Dict[str, Any],
 ) -> bool:
 
-    if not reservation:
+    # Chaque logement doit explicitement autoriser sa propre logique d'accès.
+    if not property_data.get(
+        "sensitive_access_enabled",
+        False,
+    ):
+        print(
+            "ACCESS DENIED - sensitive access is disabled "
+            f"for {property_data.get('name')}"
+        )
+        return False
 
+    if not reservation:
         print(
             "No reservation - sensitive access impossible"
         )
-
         return False
 
     status = str(
@@ -1311,16 +1671,45 @@ def access_is_authorized(
         "confirmed",
         "reserved",
     ):
-
         print(
             "ACCESS DENIED - reservation status"
         )
-
         return False
 
-    timezone_name = property_data[
-        "timezone"
-    ]
+    # Les horaires doivent venir DU logement courant, jamais d'une règle globale.
+    checkin_hhmm = parse_hhmm(
+        property_data.get(
+            "check_in_time"
+        )
+    )
+    checkout_hhmm = parse_hhmm(
+        property_data.get(
+            "check_out_time"
+        )
+    )
+
+    if not checkin_hhmm or not checkout_hhmm:
+        print(
+            "ACCESS DENIED - property check-in/check-out "
+            "times are not configured"
+        )
+        return False
+
+    # Les secrets eux-mêmes doivent être configurés pour ce logement.
+    if not (
+        property_data.get("building_code")
+        and property_data.get("keybox_code")
+        and property_data.get("access_route")
+    ):
+        print(
+            "ACCESS DENIED - property access secrets incomplete"
+        )
+        return False
+
+    timezone_name = property_data.get(
+        "timezone",
+        "Europe/Paris",
+    )
 
     tz = ZoneInfo(
         timezone_name
@@ -1328,121 +1717,38 @@ def access_is_authorized(
 
     now = datetime.now(tz)
 
-    checkin = None
-    checkout = None
-
-    # --------------------------------------------------------
-    # Dates localisées Guesty
-    # --------------------------------------------------------
-
-    checkin_date = first_value(
-        reservation.get(
-            "checkInDateLocalized"
-        ),
-        reservation.get(
-            "checkinDateLocalized"
-        ),
+    stay = extract_reservation_stay(
+        reservation,
+        timezone_name,
     )
 
-    checkout_date = first_value(
-        reservation.get(
-            "checkOutDateLocalized"
-        ),
-        reservation.get(
-            "checkoutDateLocalized"
-        ),
+    if not (
+        stay.get("check_in")
+        and stay.get("check_out")
+    ):
+        print(
+            "ACCESS DENIED - reservation dates unavailable"
+        )
+        return False
+
+    checkin = make_local_date_time(
+        stay["check_in"],
+        checkin_hhmm[0],
+        checkin_hhmm[1],
+        timezone_name,
     )
 
-    if checkin_date:
-
-        checkin = make_local_date_time(
-            checkin_date,
-            16,
-            0,
-            timezone_name,
-        )
-
-    if checkout_date:
-
-        checkout = make_local_date_time(
-            checkout_date,
-            10,
-            0,
-            timezone_name,
-        )
-
-    # --------------------------------------------------------
-    # Fallback timestamps
-    # --------------------------------------------------------
-
-    if not checkin:
-
-        for key in (
-            "checkIn",
-            "checkin",
-            "checkInDate",
-            "arrivalDate",
-        ):
-
-            value = reservation.get(
-                key
-            )
-
-            dt = parse_datetime(
-                value
-            )
-
-            if dt:
-
-                checkin = localize_datetime(
-                    dt,
-                    timezone_name,
-                ).replace(
-                    hour=16,
-                    minute=0,
-                    second=0,
-                    microsecond=0,
-                )
-
-                break
-
-    if not checkout:
-
-        for key in (
-            "checkOut",
-            "checkout",
-            "checkOutDate",
-            "departureDate",
-        ):
-
-            value = reservation.get(
-                key
-            )
-
-            dt = parse_datetime(
-                value
-            )
-
-            if dt:
-
-                checkout = localize_datetime(
-                    dt,
-                    timezone_name,
-                ).replace(
-                    hour=10,
-                    minute=0,
-                    second=0,
-                    microsecond=0,
-                )
-
-                break
+    checkout = make_local_date_time(
+        stay["check_out"],
+        checkout_hhmm[0],
+        checkout_hhmm[1],
+        timezone_name,
+    )
 
     if not checkin or not checkout:
-
         print(
-            "ACCESS DENIED - dates unavailable"
+            "ACCESS DENIED - could not build local stay datetimes"
         )
-
         return False
 
     print(
@@ -1455,16 +1761,9 @@ def access_is_authorized(
         f"{checkout.isoformat()}"
     )
 
-    authorized_from = (
-        checkin.timestamp()
-        - 24 * 60 * 60
+    authorized_from = checkin - timedelta(
+        hours=24
     )
-
-    authorized_from = datetime.fromtimestamp(
-        authorized_from,
-        tz=tz,
-    )
-
     authorized_until = checkout
 
     if (
@@ -1472,12 +1771,10 @@ def access_is_authorized(
         <= now
         <= authorized_until
     ):
-
         print(
             "ACCESS AUTHORIZED - "
             "confirmed imminent/current stay"
         )
-
         return True
 
     print(
@@ -1487,79 +1784,108 @@ def access_is_authorized(
 
     return False
 
-
 # ============================================================
 # PROPERTY CONTEXT
 # ============================================================
 
+def display_value(
+    value: Any,
+) -> str:
+    if value is None:
+        return "INCONNU"
+    return str(value)
+
+
+def display_bool(
+    value: Any,
+) -> str:
+    if value is True:
+        return "oui"
+    if value is False:
+        return "non"
+    return "INCONNU"
+
+
 def build_property_context(
+    listing_id: str,
     property_data: Dict[str, Any],
     authorized: bool,
 ) -> str:
 
+    address = (
+        property_data.get("address")
+        if authorized
+        else "Adresse exacte non communicable avant autorisation d'accès"
+    )
+
     context = f"""
-LOGEMENT :
-{property_data["name"]}
+LOGEMENT COURANT :
+{display_value(property_data.get("name"))}
+
+NOM GUESTY :
+{display_value(property_data.get("guesty_name"))}
+
+LISTING ID INTERNE :
+{listing_id}
+Ne jamais communiquer cet ID au voyageur.
 
 ADRESSE :
-{property_data["address"] if authorized else "Adresse exacte non communicable avant autorisation d'accès"}
+{display_value(address)}
 
 CHECK-IN :
-{property_data["check_in_time"]}
+{display_value(property_data.get("check_in_time"))}
 
 CHECK-OUT :
-{property_data["check_out_time"]}
+{display_value(property_data.get("check_out_time"))}
 
 ÉTAGE :
-{property_data["floor"]}
+{display_value(property_data.get("floor"))}
 
 ASCENSEUR :
-{"oui" if property_data["elevator"] else "non"}
+{display_bool(property_data.get("elevator"))}
 
 CHAMBRES :
-{property_data["bedrooms"]}
+{display_value(property_data.get("bedrooms"))}
 
 SALLES DE BAIN :
-{property_data["bathrooms"]}
+{display_value(property_data.get("bathrooms"))}
 
 WC :
-{property_data["wc"]}
+{display_value(property_data.get("wc"))}
 
 CUISINE ÉQUIPÉE :
-{"oui" if property_data["fully_equipped_kitchen"] else "non"}
+{display_bool(property_data.get("fully_equipped_kitchen"))}
 
 CLIMATISATION :
-{"oui" if property_data["air_conditioning"] else "non"}
+{display_bool(property_data.get("air_conditioning"))}
 
 SENSITIVE_ACCESS_AUTHORIZED :
 {str(authorized).upper()}
 """
 
     if authorized:
-
         context += f"""
 
-INFORMATIONS D'ACCÈS AUTORISÉES :
+INFORMATIONS D'ACCÈS AUTORISÉES POUR CE LOGEMENT UNIQUEMENT :
 
 CODE IMMEUBLE :
-{property_data["building_code"]}
+{display_value(property_data.get("building_code"))}
 
 CODE BOÎTE À CLÉS :
-{property_data["keybox_code"]}
+{display_value(property_data.get("keybox_code"))}
 
 EMPLACEMENT BOÎTE À CLÉS :
-{property_data["keybox_location"]}
+{display_value(property_data.get("keybox_location"))}
 
 CHEMIN D'ACCÈS :
-{property_data["access_route"]}
+{display_value(property_data.get("access_route"))}
 
 VIDÉO D'ACCÈS :
-{property_data["video_url"]}
+{display_value(property_data.get("video_url"))}
 """
 
     else:
-
-        context += """
+        context += f"""
 
 INFORMATIONS D'ACCÈS SENSIBLES INTERDITES.
 
@@ -1568,16 +1894,13 @@ NE DONNE PAS :
 - le code boîte à clés
 - le chemin détaillé
 - le lien vidéo
+- des codes ou instructions provenant d'un autre logement
 
-Tu peux seulement indiquer :
-- appartement au 1er étage
-- pas d'ascenseur
-- toutes les instructions sont disponibles
-  sur le guide d'arrivée Airbnb.
+GUIDE D'ARRIVÉE NON SENSIBLE :
+{display_value(property_data.get("arrival_guide"))}
 """
 
     return context.strip()
-
 
 # ============================================================
 # HISTORY
@@ -1810,105 +2133,416 @@ async def get_recent_style_examples(
 # LIVE AVAILABILITY / CALENDAR
 # ============================================================
 
-async def extract_requested_dates(history: str, timezone_name: str) -> Optional[Dict[str, str]]:
-    """Extract an explicit stay period from the guest conversation. Never guesses missing dates."""
-    today = datetime.now(ZoneInfo(timezone_name)).date().isoformat()
+async def extract_availability_request(
+    latest_guest_message: str,
+    history: str,
+    booking_context: Dict[str, Any],
+    timezone_name: str,
+) -> Dict[str, Any]:
+    """
+    Détermine si le DERNIER message demande réellement une disponibilité
+    pour une période nouvelle / à vérifier.
+
+    Important :
+    - les dates d'une réservation existante restent celles de Guesty ;
+    - on n'interroge pas le calendrier juste parce que des dates de réservation
+      apparaissent dans l'historique ;
+    - pour une extension clairement formulée, les dates Guesty de la réservation
+      peuvent servir de point d'ancrage.
+    """
+    today = datetime.now(
+        ZoneInfo(timezone_name)
+    ).date().isoformat()
+
+    reservation_check_in = booking_context.get(
+        "reservation_check_in"
+    )
+    reservation_check_out = booking_context.get(
+        "reservation_check_out"
+    )
+
     prompt = f"""
 Today in the property's timezone is {today}.
-Read the Airbnb conversation below and identify whether the guest explicitly asks about availability for a stay with BOTH a check-in date and a check-out date.
-Resolve relative dates only when unambiguous from today's date.
-Return ONLY JSON in one of these forms:
-{{"check_in":"YYYY-MM-DD","check_out":"YYYY-MM-DD"}}
-or
-{{"check_in":null,"check_out":null}}
-Do not guess a missing year/date. Check-out must be after check-in.
 
-CONVERSATION:
+You analyze the LAST Airbnb guest message to decide whether the guest is asking
+about availability for a stay period that must be checked in the live calendar.
+
+CURRENT VERIFIED RESERVATION CONTEXT:
+conversation_type = {booking_context.get("conversation_type")}
+reservation_check_in = {reservation_check_in or "NONE"}
+reservation_check_out = {reservation_check_out or "NONE"}
+
+LAST GUEST MESSAGE:
+{latest_guest_message}
+
+CONVERSATION HISTORY:
 {history}
+
+Return ONLY valid JSON:
+{{
+  "availability_question": true or false,
+  "check_in": "YYYY-MM-DD" or null,
+  "check_out": "YYYY-MM-DD" or null,
+  "reason": "short internal reason"
+}}
+
+Rules:
+1. Set availability_question=true only when the last guest message asks whether
+   dates are available, asks to book/stay for dates, asks to extend/shorten into
+   a new period that requires availability, or otherwise clearly requires a
+   calendar availability check.
+2. Do NOT set it true merely because the conversation contains dates.
+3. Do NOT use the calendar to confirm an already-confirmed reservation.
+4. If the guest is just discussing arrival/check-in/check-out timing for their
+   existing reservation, availability_question=false.
+5. For a pre-booking inquiry like "is it available?" with no dates,
+   availability_question=true and both dates null.
+6. Resolve relative dates only when unambiguous.
+7. You may use the verified reservation_check_out as the start of an extension
+   only when the guest clearly asks to extend beyond the current stay.
+8. Never invent a missing date or year.
+9. check_out must be strictly after check_in.
 """
+
     try:
         response = await openai_client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
-                {"role": "system", "content": "You extract travel dates. Output valid JSON only."},
-                {"role": "user", "content": prompt},
+                {
+                    "role": "system",
+                    "content": (
+                        "You classify Airbnb availability requests and extract "
+                        "dates. Output valid JSON only."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": prompt,
+                },
             ],
         )
-        raw = (response.choices[0].message.content or "").strip()
-        raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I | re.S).strip()
+
+        raw = (
+            response.choices[0].message.content
+            or ""
+        ).strip()
+
+        raw = re.sub(
+            r"^```(?:json)?\s*|\s*```$",
+            "",
+            raw,
+            flags=re.I | re.S,
+        ).strip()
+
         data = json.loads(raw)
-        ci, co = data.get("check_in"), data.get("check_out")
-        if not ci or not co:
-            return None
-        ci_d, co_d = date.fromisoformat(ci), date.fromisoformat(co)
+
+        availability_question = bool(
+            data.get("availability_question")
+        )
+
+        check_in = data.get("check_in")
+        check_out = data.get("check_out")
+
+        if not availability_question:
+            return {
+                "availability_question": False,
+                "check_in": None,
+                "check_out": None,
+                "reason": str(
+                    data.get("reason")
+                    or "not_an_availability_request"
+                ),
+            }
+
+        if not check_in or not check_out:
+            return {
+                "availability_question": True,
+                "check_in": None,
+                "check_out": None,
+                "reason": str(
+                    data.get("reason")
+                    or "dates_missing"
+                ),
+            }
+
+        ci_d = date.fromisoformat(
+            str(check_in)
+        )
+        co_d = date.fromisoformat(
+            str(check_out)
+        )
+
         if co_d <= ci_d:
-            return None
-        if (co_d - ci_d).days > 365:
-            return None
-        return {"check_in": ci, "check_out": co}
+            return {
+                "availability_question": True,
+                "check_in": None,
+                "check_out": None,
+                "reason": "invalid_date_order",
+            }
+
+        if (
+            co_d - ci_d
+        ).days > 365:
+            return {
+                "availability_question": True,
+                "check_in": None,
+                "check_out": None,
+                "reason": "stay_too_long",
+            }
+
+        return {
+            "availability_question": True,
+            "check_in": ci_d.isoformat(),
+            "check_out": co_d.isoformat(),
+            "reason": str(
+                data.get("reason")
+                or "availability_dates_extracted"
+            ),
+        }
+
     except Exception as exc:
-        print(f"Date extraction unavailable: {exc}")
+        print(
+            f"Availability request extraction unavailable: {exc}"
+        )
+
+        # Fail closed : aucune disponibilité n'est confirmée.
+        return {
+            "availability_question": False,
+            "check_in": None,
+            "check_out": None,
+            "reason": "extractor_error",
+        }
+
+
+def extract_calendar_days(
+    payload: Any,
+) -> List[Dict[str, Any]]:
+    if isinstance(payload, list):
+        return [
+            item
+            for item in payload
+            if isinstance(item, dict)
+        ]
+
+    if not isinstance(payload, dict):
+        return []
+
+    for key in (
+        "days",
+        "data",
+        "results",
+    ):
+        value = payload.get(key)
+
+        if isinstance(value, list):
+            return [
+                item
+                for item in value
+                if isinstance(item, dict)
+            ]
+
+        if (
+            isinstance(value, dict)
+            and isinstance(
+                value.get("days"),
+                list,
+            )
+        ):
+            return [
+                item
+                for item in value["days"]
+                if isinstance(item, dict)
+            ]
+
+    return []
+
+
+def calendar_day_date(
+    day: Dict[str, Any],
+) -> Optional[str]:
+    raw = first_value(
+        day.get("date"),
+        day.get("startDate"),
+        day.get("calendarDate"),
+    )
+
+    if not raw:
+        return None
+
+    try:
+        return date.fromisoformat(
+            str(raw)[:10]
+        ).isoformat()
+    except Exception:
         return None
 
 
-async def get_live_availability_context(listing_id: str, history: str, timezone_name: str) -> str:
-    dates = await extract_requested_dates(history, timezone_name)
-    if not dates:
-        return "CALENDRIER LIVE : aucune période complète et non ambiguë détectée dans la demande. Ne confirme aucune disponibilité; demande les dates si nécessaire."
+def calendar_day_is_available(
+    day: Dict[str, Any],
+) -> bool:
+    allotment = day.get("allotment")
 
-    check_in = dates["check_in"]
-    check_out = dates["check_out"]
-    # Guesty calendar is daily. For a stay, nights run from check-in through the day before check-out.
-    last_night = (date.fromisoformat(check_out) - timedelta(days=1)).isoformat()
+    if isinstance(
+        allotment,
+        (int, float),
+    ):
+        return allotment > 0
+
+    status = str(
+        day.get(
+            "status",
+            "",
+        )
+    ).strip().lower()
+
+    return status in (
+        "available",
+        "open",
+    )
+
+
+async def get_live_availability_context(
+    listing_id: str,
+    availability_request: Dict[str, Any],
+) -> str:
+
+    if not availability_request.get(
+        "availability_question"
+    ):
+        return (
+            "CALENDRIER LIVE : AUCUNE DEMANDE DE DISPONIBILITÉ "
+            "DÉTECTÉE DANS LE DERNIER MESSAGE. "
+            "Ne parle pas spontanément de disponibilité."
+        )
+
+    check_in = availability_request.get(
+        "check_in"
+    )
+    check_out = availability_request.get(
+        "check_out"
+    )
+
+    if not check_in or not check_out:
+        return (
+            "CALENDRIER LIVE : le voyageur demande une disponibilité "
+            "mais aucune période complète et non ambiguë n'a pu être "
+            "déterminée. Demande naturellement les dates d'arrivée et "
+            "de départ manquantes."
+        )
+
+    check_in_date = date.fromisoformat(
+        check_in
+    )
+    check_out_date = date.fromisoformat(
+        check_out
+    )
+
+    # Les nuits vont du check-in jusqu'à la veille du check-out.
+    expected_dates = []
+    cursor = check_in_date
+
+    while cursor < check_out_date:
+        expected_dates.append(
+            cursor.isoformat()
+        )
+        cursor += timedelta(
+            days=1
+        )
+
+    last_night = expected_dates[-1]
+
     try:
+        # CRITIQUE : l'URL contient exactement le Listing ID déjà vérifié.
         payload = await guesty_request(
             "GET",
-            f"/availability-pricing/api/calendar/listings/{listing_id}",
+            (
+                "/availability-pricing/api/calendar/"
+                f"listings/{listing_id}"
+            ),
             params={
                 "startDate": check_in,
                 "endDate": last_night,
                 "includeAllotment": "true",
             },
         )
-        days = []
-        if isinstance(payload, list):
-            days = payload
-        elif isinstance(payload, dict):
-            for key in ("days", "data", "results"):
-                value = payload.get(key)
-                if isinstance(value, list):
-                    days = value
-                    break
-                if isinstance(value, dict) and isinstance(value.get("days"), list):
-                    days = value["days"]
-                    break
 
-        expected = (date.fromisoformat(check_out) - date.fromisoformat(check_in)).days
-        if not days or len(days) < expected:
-            print(f"Calendar incomplete for {check_in} -> {check_out}: {len(days)}/{expected} days")
-            return f"CALENDRIER LIVE : vérification Guesty incomplète pour {check_in} → {check_out}. Ne confirme pas la disponibilité; indique que tu vas vérifier."
+        days = extract_calendar_days(
+            payload
+        )
 
-        unavailable = []
-        for day in days[:expected]:
-            allotment = day.get("allotment")
-            status = str(day.get("status", "")).lower()
-            if isinstance(allotment, (int, float)):
-                available = allotment > 0
-            else:
-                available = status == "available"
-            if not available:
-                unavailable.append(str(day.get("date") or day.get("startDate") or "date bloquée"))
+        by_date: Dict[str, Dict[str, Any]] = {}
 
-        if unavailable:
-            print(f"LIVE CALENDAR: unavailable {check_in} -> {check_out}")
-            return f"CALENDRIER LIVE GUESTY : période demandée {check_in} → {check_out} = INDISPONIBLE sur toute la période. Ne révèle pas les raisons/blocs internes."
+        for day in days:
+            day_date = calendar_day_date(
+                day
+            )
+            if day_date:
+                by_date[day_date] = day
 
-        print(f"LIVE CALENDAR: available {check_in} -> {check_out}")
-        return f"CALENDRIER LIVE GUESTY : période demandée {check_in} → {check_out} = DISPONIBLE au moment de la vérification."
+        missing_dates = [
+            day_date
+            for day_date in expected_dates
+            if day_date not in by_date
+        ]
+
+        if missing_dates:
+            print(
+                "Calendar incomplete for "
+                f"{listing_id} {check_in} -> {check_out}. "
+                f"Missing: {missing_dates}"
+            )
+
+            return (
+                "CALENDRIER LIVE : vérification Guesty incomplète "
+                f"pour {check_in} → {check_out}. "
+                "Ne confirme pas la disponibilité ; indique que tu vas vérifier."
+            )
+
+        unavailable_dates = [
+            day_date
+            for day_date in expected_dates
+            if not calendar_day_is_available(
+                by_date[day_date]
+            )
+        ]
+
+        if unavailable_dates:
+            print(
+                "LIVE CALENDAR: unavailable "
+                f"listing={listing_id} "
+                f"{check_in} -> {check_out}"
+            )
+
+            return (
+                "CALENDRIER LIVE GUESTY : "
+                f"période demandée {check_in} → {check_out} = INDISPONIBLE. "
+                "Le calendrier interrogé est celui du logement courant uniquement. "
+                "Ne révèle pas les raisons internes ni les dates bloquées."
+            )
+
+        print(
+            "LIVE CALENDAR: available "
+            f"listing={listing_id} "
+            f"{check_in} -> {check_out}"
+        )
+
+        return (
+            "CALENDRIER LIVE GUESTY : "
+            f"période demandée {check_in} → {check_out} = DISPONIBLE "
+            "au moment de la vérification. "
+            "Le calendrier interrogé est celui du logement courant uniquement."
+        )
+
     except Exception as exc:
-        print(f"ERROR live calendar: {exc}")
-        return f"CALENDRIER LIVE : Guesty n'a pas pu être vérifié pour {check_in} → {check_out}. Ne confirme pas la disponibilité; indique que tu vas vérifier."
+        print(
+            f"ERROR live calendar for listing {listing_id}: {exc}"
+        )
 
+        return (
+            "CALENDRIER LIVE : Guesty n'a pas pu être vérifié "
+            f"pour {check_in} → {check_out}. "
+            "Ne confirme pas la disponibilité ; indique que tu vas vérifier."
+        )
 
 # ============================================================
 # OPENAI
@@ -1916,7 +2550,9 @@ async def get_live_availability_context(listing_id: str, history: str, timezone_
 
 async def generate_reply(
     guest_name: Optional[str],
+    listing_id: str,
     property_data: Dict[str, Any],
+    booking_context: Dict[str, Any],
     authorized: bool,
     history: str,
     style_examples: List[str],
@@ -1924,16 +2560,28 @@ async def generate_reply(
 ) -> str:
 
     property_context = build_property_context(
-        property_data,
-        authorized,
+        listing_id=listing_id,
+        property_data=property_data,
+        authorized=authorized,
+    )
+
+    verified_booking_context = booking_context_to_prompt(
+        booking_context
     )
 
     style_context = ""
 
     if style_examples:
         style_context = "\n\nEXEMPLES RÉELS DE L'HÔTE :\n"
-        for i, example in enumerate(style_examples, 1):
-            style_context += f"\nEXEMPLE {i}:\n{example}\n"
+
+        for i, example in enumerate(
+            style_examples,
+            1,
+        ):
+            style_context += (
+                f"\nEXEMPLE {i}:\n"
+                f"{example}\n"
+            )
 
         style_context += """
 
@@ -1948,11 +2596,24 @@ N'utilise jamais leur contenu factuel comme information sur la conversation actu
         else "Prénom du voyageur inconnu"
     )
 
-    timezone_name = property_data.get("timezone", "Europe/Paris")
-    current_local_datetime = datetime.now(ZoneInfo(timezone_name))
-    current_time_context = current_local_datetime.strftime("%A %d/%m/%Y %H:%M")
+    timezone_name = property_data.get(
+        "timezone",
+        "Europe/Paris",
+    )
+
+    current_local_datetime = datetime.now(
+        ZoneInfo(timezone_name)
+    )
+
+    current_time_context = (
+        current_local_datetime.strftime(
+            "%A %d/%m/%Y %H:%M"
+        )
+    )
 
     user_prompt = f"""
+{verified_booking_context}
+
 {property_context}
 
 HEURE LOCALE ACTUELLE DU LOGEMENT :
@@ -1970,11 +2631,20 @@ HISTORIQUE DE CONVERSATION :
 
 Réponds au dernier message du voyageur.
 
+Rappels critiques :
+- le logement courant a déjà été identifié par le serveur ;
+- n'utilise jamais les données d'un autre logement ;
+- les dates de réservation Guesty sont la vérité pour la réservation existante ;
+- une nouvelle disponibilité vient uniquement du bloc CALENDRIER LIVE ;
+- ne révèle jamais les IDs internes ;
+- si une donnée du logement est INCONNUE, ne l'invente pas.
+
 Si plusieurs messages récents forment une même demande,
 réponds à tous les points en UNE SEULE réponse.
 
-Raisonne silencieusement avec l'heure actuelle, les dates, l'historique et les règles.
-Si la réponse est évidente, réponds directement sans réciter la règle qui permet de la déduire.
+Raisonne silencieusement avec l'heure actuelle, les dates, l'historique
+et le contexte Guesty vérifié.
+Si la réponse est évidente, réponds directement sans réciter la règle.
 Adapte surtout ta longueur et ta façon de répondre aux EXEMPLES RÉELS DE L'HÔTE.
 Sois naturel, chaleureux, utile et aussi concis que l'hôte le serait.
 """
@@ -1982,21 +2652,28 @@ Sois naturel, chaleureux, utile et aussi concis que l'hôte le serait.
     response = await openai_client.chat.completions.create(
         model=OPENAI_MODEL,
         messages=[
-            {"role": "system", "content": SYSTEM_RULES},
-            {"role": "user", "content": user_prompt}
-        ]
+            {
+                "role": "system",
+                "content": SYSTEM_RULES,
+            },
+            {
+                "role": "user",
+                "content": user_prompt,
+            },
+        ],
     )
 
-    reply = response.choices[0].message.content.strip()
+    reply = (
+        response.choices[0].message.content
+        or ""
+    ).strip()
 
     if not reply:
-
         raise RuntimeError(
             "OpenAI returned empty response"
         )
 
     return reply
-
 
 # ============================================================
 # SEND
@@ -2268,51 +2945,14 @@ async def process_messages(
         "================================"
     )
 
-    # --------------------------------------------------------
-    # Dernier payload
-    # --------------------------------------------------------
+    if not payloads:
+        print("No payloads - skipping")
+        return
 
     latest_payload = payloads[-1]
 
     # --------------------------------------------------------
-    # Reservation
-    # --------------------------------------------------------
-
-    reservation_id = None
-
-    for payload in reversed(
-        payloads
-    ):
-
-        reservation_id = extract_reservation_id(
-            payload
-        )
-
-        if reservation_id:
-            break
-
-    reservation = None
-
-    if reservation_id:
-
-        print(
-            f"Reservation ID: "
-            f"{reservation_id}"
-        )
-
-        reservation = await get_reservation(
-            reservation_id
-        )
-
-    else:
-
-        print(
-            "No reservation ID - "
-            "inquiry / pre-booking conversation"
-        )
-
-    # --------------------------------------------------------
-    # Conversation
+    # 1. Conversation fraîche Guesty
     # --------------------------------------------------------
 
     conversation = latest_payload.get(
@@ -2323,7 +2963,6 @@ async def process_messages(
         conversation,
         dict,
     ):
-
         conversation = {}
 
     fresh_conversation = await get_conversation(
@@ -2331,55 +2970,164 @@ async def process_messages(
     )
 
     if fresh_conversation:
-
         conversation = fresh_conversation
 
-    if not is_guest_conversation(conversation):
-        print("Non-guest / owner conversation - skipping")
+    if not is_guest_conversation(
+        conversation
+    ):
+        print(
+            "Non-guest / owner conversation - skipping"
+        )
         return
 
     print(
-        "Conversation ID found"
+        "Conversation retrieved"
     )
 
     # --------------------------------------------------------
-    # Property
+    # 2. Reservation ID
     # --------------------------------------------------------
 
-    listing_id = extract_listing_id(
-        reservation,
-        conversation,
-        latest_payload,
-    )
+    reservation_id = None
 
-    if not listing_id:
-
-        print(
-            "Could not identify property safely"
+    # D'abord les webhooks.
+    for payload in reversed(
+        payloads
+    ):
+        reservation_id = extract_reservation_id(
+            payload
         )
+
+        if reservation_id:
+            break
+
+    # Puis la conversation fraîche Guesty.
+    if not reservation_id:
+        reservation_id = extract_reservation_id(
+            {
+                "conversation":
+                    conversation
+            }
+        )
+
+    reservation = None
+
+    if reservation_id:
+        print(
+            f"Reservation ID found: "
+            f"{reservation_id}"
+        )
+
+        reservation = await get_reservation(
+            reservation_id
+        )
+
+        # Fail closed : si Guesty nous dit qu'il y a une réservation mais
+        # qu'on ne peut pas la récupérer, on ne répond pas avec un contexte partiel.
+        if not reservation:
+            print(
+                "BLOCKED - reservation ID exists but "
+                "reservation could not be retrieved safely"
+            )
+            return
+
+    else:
+        print(
+            "No reservation ID - inquiry / pre-booking conversation"
+        )
+
+    # --------------------------------------------------------
+    # 3. IDENTIFICATION STRICTE DU LOGEMENT
+    # --------------------------------------------------------
+
+    listing_resolution = resolve_listing_id(
+        reservation=reservation,
+        conversation=conversation,
+        payloads=payloads,
+    )
+
+    if not listing_resolution.get(
+        "ok"
+    ):
+        print(
+            "BLOCKED - property could not be identified safely. "
+            f"Reason: {listing_resolution.get('reason')}"
+        )
+
+        evidence = listing_resolution.get(
+            "evidence"
+        ) or []
+
+        # Logs techniques : IDs seulement, jamais de secrets.
+        for item in evidence:
+            print(
+                "Listing evidence: "
+                f"{item.get('source')} = "
+                f"{item.get('value')}"
+            )
 
         return
 
-    property_data = PROPERTIES.get(
-        listing_id
-    )
+    listing_id = listing_resolution[
+        "listing_id"
+    ]
 
-    if not property_data:
+    property_data = listing_resolution[
+        "property_data"
+    ]
 
+    if property_data.get(
+        "enabled",
+        True,
+    ) is False:
         print(
-            f"Unknown listing ID: "
-            f"{listing_id}"
+            f"BLOCKED - property disabled: "
+            f"{property_data.get('name')}"
         )
-
         return
 
     print(
-        f"Property identified: "
-        f"{property_data['name']}"
+        "PROPERTY VERIFIED"
+    )
+    print(
+        f"Guesty name: "
+        f"{property_data.get('guesty_name')}"
+    )
+    print(
+        f"Listing ID: {listing_id}"
     )
 
     # --------------------------------------------------------
-    # Sensitive access
+    # 4. Contexte réservation / inquiry + dates Guesty
+    # --------------------------------------------------------
+
+    booking_context = build_booking_context(
+        conversation_id=conversation_id,
+        listing_id=listing_id,
+        property_data=property_data,
+        reservation_id=reservation_id,
+        reservation=reservation,
+    )
+
+    print(
+        f"Conversation type: "
+        f"{booking_context.get('conversation_type')}"
+    )
+    print(
+        f"Reservation status: "
+        f"{booking_context.get('reservation_status')}"
+    )
+    print(
+        f"Reservation check-in: "
+        f"{booking_context.get('reservation_check_in')}"
+    )
+    print(
+        f"Reservation check-out: "
+        f"{booking_context.get('reservation_check_out')}"
+    )
+
+    # --------------------------------------------------------
+    # 5. Sensitive access
     # --------------------------------------------------------
 
     authorized = access_is_authorized(
@@ -2393,7 +3141,7 @@ async def process_messages(
     )
 
     # --------------------------------------------------------
-    # 1. Try Guesty posts
+    # 6. Messages de la conversation
     # --------------------------------------------------------
 
     posts = await get_conversation_posts(
@@ -2401,34 +3149,24 @@ async def process_messages(
     )
 
     if posts:
-
         print(
             f"Conversation posts retrieved: "
             f"{len(posts)}"
         )
 
     else:
-
         print(
             "No conversation posts returned."
         )
-
         print(
             "USING WEBHOOK FALLBACK."
         )
-
-        # ----------------------------------------------------
-        # 2. conversation.thread + message
-        # ----------------------------------------------------
 
         posts = payloads_to_posts(
             payloads
         )
 
-        # Si get_conversation a fourni un thread,
-        # on l'utilise également.
         if not posts:
-
             posts = webhook_thread_to_posts(
                 {
                     "conversation":
@@ -2445,20 +3183,11 @@ async def process_messages(
             f"{len(posts)}"
         )
 
-    # --------------------------------------------------------
-    # Aucun message exploitable
-    # --------------------------------------------------------
-
     if not posts:
-
         print(
-            "ERROR: no usable guest message "
-            "found anywhere."
+            "ERROR: no usable guest message found anywhere."
         )
 
-        # IMPORTANT :
-        # on affiche seulement la structure,
-        # pas les secrets.
         message = latest_payload.get(
             "message"
         )
@@ -2471,7 +3200,6 @@ async def process_messages(
             message,
             dict,
         ):
-
             print(
                 "Webhook message keys: "
                 f"{list(message.keys())}"
@@ -2481,7 +3209,6 @@ async def process_messages(
             webhook_conversation,
             dict,
         ):
-
             print(
                 "Webhook conversation keys: "
                 f"{list(webhook_conversation.keys())}"
@@ -2490,7 +3217,7 @@ async def process_messages(
         return
 
     # --------------------------------------------------------
-    # Dernier message voyageur
+    # 7. Dernier message voyageur
     # --------------------------------------------------------
 
     guest_post = get_latest_guest_post(
@@ -2498,11 +3225,9 @@ async def process_messages(
     )
 
     if not guest_post:
-
         print(
             "No guest message found."
         )
-
         return
 
     guest_message = post_text(
@@ -2515,23 +3240,21 @@ async def process_messages(
     )
 
     # --------------------------------------------------------
-    # Anti double-réponse
+    # 8. Anti double-réponse
     # --------------------------------------------------------
 
     if host_replied_after_guest(
         posts,
         guest_post,
     ):
-
         print(
-            "Host already replied after "
-            "latest guest message - skipping"
+            "Host already replied after latest "
+            "guest message - skipping"
         )
-
         return
 
     # --------------------------------------------------------
-    # Guest name
+    # 9. Guest name
     # --------------------------------------------------------
 
     guest_name = extract_guest_name(
@@ -2540,7 +3263,7 @@ async def process_messages(
     )
 
     # --------------------------------------------------------
-    # History
+    # 10. History sécurisée pour LE logement courant
     # --------------------------------------------------------
 
     history = build_conversation_history(
@@ -2550,23 +3273,41 @@ async def process_messages(
     )
 
     if not history:
-
         history = (
             f"VOYAGEUR: {guest_message}"
         )
 
     # --------------------------------------------------------
-    # Live calendar / availability
+    # 11. Dates demandées + calendrier DU BON LISTING
     # --------------------------------------------------------
 
+    availability_request = await extract_availability_request(
+        latest_guest_message=guest_message,
+        history=history,
+        booking_context=booking_context,
+        timezone_name=property_data.get(
+            "timezone",
+            "Europe/Paris",
+        ),
+    )
+
+    print(
+        "Availability request detected: "
+        f"{availability_request.get('availability_question')}"
+    )
+    print(
+        "Requested availability dates: "
+        f"{availability_request.get('check_in')} -> "
+        f"{availability_request.get('check_out')}"
+    )
+
     availability_context = await get_live_availability_context(
-        listing_id,
-        history,
-        property_data["timezone"],
+        listing_id=listing_id,
+        availability_request=availability_request,
     )
 
     # --------------------------------------------------------
-    # Style
+    # 12. Style : uniquement conversations du même Listing ID
     # --------------------------------------------------------
 
     style_examples = await get_recent_style_examples(
@@ -2575,7 +3316,73 @@ async def process_messages(
     )
 
     # --------------------------------------------------------
-    # OpenAI
+    # 13. Dernier verrou avant OpenAI
+    # --------------------------------------------------------
+
+    if listing_id not in PROPERTIES:
+        print(
+            "BLOCKED - listing disappeared from configuration"
+        )
+        return
+
+    if (
+        PROPERTIES[listing_id]
+        is not property_data
+    ):
+        # Ce test n'est pas censé arriver ; il empêche un changement de contexte
+        # accidentel en mémoire avant la génération.
+        print(
+            "BLOCKED - property context changed unexpectedly"
+        )
+        return
+
+    print("")
+    print(
+        "===== VERIFIED CONTEXT ====="
+    )
+    print(
+        f"Conversation: {conversation_id}"
+    )
+    print(
+        f"Type: "
+        f"{booking_context.get('conversation_type')}"
+    )
+    print(
+        f"Property: "
+        f"{property_data.get('name')}"
+    )
+    print(
+        f"Listing: {listing_id}"
+    )
+    print(
+        f"Reservation: "
+        f"{reservation_id or 'NONE'}"
+    )
+    print(
+        f"Status: "
+        f"{booking_context.get('reservation_status') or 'NONE'}"
+    )
+    print(
+        f"Check-in: "
+        f"{booking_context.get('reservation_check_in') or 'NONE'}"
+    )
+    print(
+        f"Check-out: "
+        f"{booking_context.get('reservation_check_out') or 'NONE'}"
+    )
+    print(
+        f"Availability dates: "
+        f"{availability_request.get('check_in') or 'NONE'} "
+        f"-> "
+        f"{availability_request.get('check_out') or 'NONE'}"
+    )
+    print(
+        "============================"
+    )
+    print("")
+
+    # --------------------------------------------------------
+    # 14. OpenAI
     # --------------------------------------------------------
 
     print(
@@ -2584,7 +3391,9 @@ async def process_messages(
 
     reply = await generate_reply(
         guest_name=guest_name,
+        listing_id=listing_id,
         property_data=property_data,
+        booking_context=booking_context,
         authorized=authorized,
         history=history,
         style_examples=style_examples,
@@ -2596,14 +3405,13 @@ async def process_messages(
     )
 
     # --------------------------------------------------------
-    # Send / test
+    # 15. Send / test
     # --------------------------------------------------------
 
     await send_reply(
         conversation_id,
         reply,
     )
-
 
 # ============================================================
 # DEBOUNCE
