@@ -4,11 +4,9 @@ services:
     runtime: python
     rootDir: maison-v2
     region: frankfurt
-    plan: 0.5c-512mb
-    numInstances: 1
+    plan: free
     buildCommand: pip install -r requirements.lock.txt
-    preDeployCommand: python -m scripts.prepare_render
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1 --no-access-log
+    startCommand: python -m scripts.prepare_render && uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1 --no-access-log
     healthCheckPath: /health
     envVars:
       - key: PYTHON_VERSION
@@ -38,7 +36,6 @@ databases:
     databaseName: agent
     user: agent
     region: frankfurt
-    plan: 0.1c-256mb
-    diskSizeGB: 5
+    plan: free
     postgresMajorVersion: "18"
     ipAllowList: []
